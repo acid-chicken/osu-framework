@@ -5,18 +5,19 @@ using System;
 
 namespace osu.Framework.Testing.Drawables.Steps
 {
-    public class SingleStepButton : StepButton
+    public partial class SingleStepButton : StepButton
     {
-        public new Action Action;
+        public new required Action Action { get; init; }
 
-        public SingleStepButton(bool isSetupStep = false)
-            : base(isSetupStep)
+        public SingleStepButton()
         {
-            base.Action = () =>
-            {
-                Action?.Invoke();
-                Success();
-            };
+            base.Action = clickAction;
+        }
+
+        private void clickAction()
+        {
+            Action();
+            Success();
         }
     }
 }

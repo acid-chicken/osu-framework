@@ -1,4 +1,4 @@
-// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
 using NUnit.Framework;
@@ -9,7 +9,7 @@ using osu.Framework.Testing;
 namespace osu.Framework.Tests.Platform
 {
     [TestFixture]
-    public class PortableInstallationTest
+    public partial class PortableInstallationTest
     {
         private readonly Storage startupStorage = new NativeStorage(RuntimeInfo.StartupDirectory);
 
@@ -58,7 +58,7 @@ namespace osu.Framework.Tests.Platform
             startupStorage.Delete(FrameworkConfigManager.FILENAME);
         }
 
-        private class TestGame : Game
+        private partial class TestGame : Game
         {
             protected override void Update()
             {

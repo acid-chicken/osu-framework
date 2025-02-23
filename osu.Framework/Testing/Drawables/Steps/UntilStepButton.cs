@@ -3,58 +3,69 @@
 
 using System;
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
+using System.Text;
+using NUnit.Framework;
 using osu.Framework.Graphics;
 using osuTK.Graphics;
 
 namespace osu.Framework.Testing.Drawables.Steps
 {
-    public class UntilStepButton : StepButton
+    public partial class UntilStepButton : StepButton
     {
-        private bool success;
+        private static readonly int max_attempt_milliseconds = FrameworkEnvironment.NoTestTimeout ? int.MaxValue : 10000;
 
-        private int invocations;
-
-        private const int max_attempt_milliseconds = 10000;
+        public required StackTrace CallStack { get; init; }
+        public required Func<bool> Assertion { get; init; }
+        public Func<string>? GetFailureMessage { get; init; }
+        public new Action? Action { get; set; }
 
         public override int RequiredRepetitions => success ? 0 : int.MaxValue;
 
-        public new Action Action;
+        private readonly string text = string.Empty;
+        private bool success;
+        private int invocations;
+        private Stopwatch? elapsedTime;
 
-        private string text;
+        public UntilStepButton()
+        {
+            updateText();
+            LightColour = Color4.Sienna;
+            base.Action = checkAssert;
+        }
 
         public new string Text
         {
             get => text;
-            set => base.Text = text = value;
+            init => base.Text = text = value;
         }
 
-        private Stopwatch elapsedTime;
-
-        public UntilStepButton(Func<bool> waitUntilTrueDelegate, bool isSetupStep = false)
-            : base(isSetupStep)
+        private void checkAssert()
         {
+            invocations++;
+            elapsedTime ??= Stopwatch.StartNew();
+
             updateText();
-            LightColour = Color4.Sienna;
 
-            base.Action = () =>
+            if (Assertion())
             {
-                invocations++;
+                elapsedTime = null;
+                success = true;
+                Success();
+            }
+            else if (!Debugger.IsAttached && elapsedTime.ElapsedMilliseconds >= max_attempt_milliseconds)
+            {
+                StringBuilder builder = new StringBuilder();
 
-                elapsedTime ??= Stopwatch.StartNew();
+                builder.Append($"\"{Text}\" timed out");
 
-                updateText();
+                if (GetFailureMessage != null)
+                    builder.Append($": {GetFailureMessage()}");
 
-                if (waitUntilTrueDelegate())
-                {
-                    elapsedTime = null;
-                    success = true;
-                    Success();
-                }
-                else if (!Debugger.IsAttached && elapsedTime.ElapsedMilliseconds >= max_attempt_milliseconds)
-                    throw new TimeoutException($"\"{Text}\" timed out");
+                throw ExceptionDispatchInfo.SetRemoteStackTrace(new AssertionException(builder.ToString()), CallStack.ToString());
+            }
 
-                Action?.Invoke();
-            };
+            Action?.Invoke();
         }
 
         public override void Reset()

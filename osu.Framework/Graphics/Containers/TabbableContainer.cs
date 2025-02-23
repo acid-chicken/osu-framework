@@ -1,14 +1,17 @@
 ﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using System.Collections.Generic;
 using System.Linq;
+using osu.Framework.Extensions.ObjectExtensions;
 using osu.Framework.Input.Events;
 using osuTK.Input;
 
 namespace osu.Framework.Graphics.Containers
 {
-    public class TabbableContainer : TabbableContainer<Drawable>
+    public partial class TabbableContainer : TabbableContainer<Drawable>
     {
     }
 
@@ -23,7 +26,7 @@ namespace osu.Framework.Graphics.Containers
         bool CanBeTabbedTo { get; }
     }
 
-    public class TabbableContainer<T> : Container<T>, ITabbableContainer
+    public partial class TabbableContainer<T> : Container<T>, ITabbableContainer
         where T : Drawable
     {
         /// <summary>
@@ -41,13 +44,14 @@ namespace osu.Framework.Graphics.Containers
             if (TabbableContentContainer == null || e.Key != Key.Tab)
                 return false;
 
-            var nextTab = nextTabStop(TabbableContentContainer, e.ShiftPressed);
-            if (nextTab != null) GetContainingInputManager().ChangeFocus(nextTab);
+            moveToNextTabStop(TabbableContentContainer, e.ShiftPressed);
             return true;
         }
 
-        private Drawable nextTabStop(CompositeDrawable target, bool reverse)
+        private void moveToNextTabStop(CompositeDrawable target, bool reverse)
         {
+            var focusManager = GetContainingFocusManager().AsNonNull();
+
             Stack<Drawable> stack = new Stack<Drawable>();
             stack.Push(target); // Extra push for circular tabbing
             stack.Push(target);
@@ -60,8 +64,8 @@ namespace osu.Framework.Graphics.Containers
 
                 if (!started)
                     started = ReferenceEquals(drawable, this);
-                else if (drawable is ITabbableContainer tabbable && tabbable.CanBeTabbedTo)
-                    return drawable;
+                else if (drawable is ITabbableContainer tabbable && tabbable.CanBeTabbedTo && focusManager.ChangeFocus(drawable))
+                    return;
 
                 if (drawable is CompositeDrawable composite)
                 {
@@ -88,8 +92,6 @@ namespace osu.Framework.Graphics.Containers
                     }
                 }
             }
-
-            return null;
         }
     }
 }

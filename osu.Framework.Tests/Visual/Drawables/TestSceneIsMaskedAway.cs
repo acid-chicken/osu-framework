@@ -1,6 +1,8 @@
 ﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using NUnit.Framework;
 using osu.Framework.Extensions.EnumExtensions;
 using osu.Framework.Graphics;
@@ -12,7 +14,7 @@ using osuTK;
 namespace osu.Framework.Tests.Visual.Drawables
 {
     [HeadlessTest]
-    public class TestSceneIsMaskedAway : FrameworkTestScene
+    public partial class TestSceneIsMaskedAway : FrameworkTestScene
     {
         /// <summary>
         /// Tests that a box which is within the bounds of a parent is never masked away, regardless of whether the parent is masking or not.
