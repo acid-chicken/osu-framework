@@ -1,11 +1,14 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using System;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using osu.Framework.Audio.Track;
+using osu.Framework.Extensions;
 using osu.Framework.IO.Stores;
 using osu.Framework.Threading;
 
@@ -85,7 +88,7 @@ namespace osu.Framework.Tests.Audio
 
             runScheduled();
 
-            Task.WaitAll(cts.Task);
+            cts.Task.WaitSafely();
         }
     }
 }

@@ -1,6 +1,11 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
+using System;
+using osu.Framework.Extensions.TypeExtensions;
+
 namespace osu.Framework.Statistics
 {
     public class GlobalStatistic<T> : IGlobalStatistic
@@ -21,6 +26,9 @@ namespace osu.Framework.Statistics
             {
                 switch (Value)
                 {
+                    case Type t:
+                        return t.ReadableName();
+
                     case double d:
                         return d.ToString("#,0.##");
 

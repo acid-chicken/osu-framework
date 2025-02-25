@@ -12,44 +12,22 @@ using osuTK.Graphics;
 
 namespace osu.Framework.Testing.Drawables.Steps
 {
-    public abstract class StepButton : CompositeDrawable
+    public abstract partial class StepButton : CompositeDrawable
     {
+        public required bool IsSetupStep { get; init; }
+        public Action? Action { get; set; }
+
         public virtual int RequiredRepetitions => 1;
 
-        protected Box Light;
-        protected Box Background;
-        protected SpriteText SpriteText;
-
-        public Action Action { get; set; }
-
-        public LocalisableString Text
-        {
-            get => SpriteText.Text;
-            set => SpriteText.Text = value;
-        }
-
-        private Color4 lightColour = Color4.BlueViolet;
-
-        public Color4 LightColour
-        {
-            get => lightColour;
-            set
-            {
-                lightColour = value;
-                if (IsLoaded) Reset();
-            }
-        }
-
-        public readonly bool IsSetupStep;
-
         protected virtual Color4 IdleColour => new Color4(0.15f, 0.15f, 0.15f, 1);
-
         protected virtual Color4 RunningColour => new Color4(0.5f, 0.5f, 0.5f, 1);
 
-        protected StepButton(bool isSetupStep = false)
-        {
-            IsSetupStep = isSetupStep;
+        protected readonly Box Light;
+        protected readonly Box Background;
+        protected readonly SpriteText SpriteText;
 
+        protected StepButton()
+        {
             InternalChildren = new Drawable[]
             {
                 Background = new Box
@@ -81,6 +59,24 @@ namespace osu.Framework.Testing.Drawables.Steps
             BorderColour = new Color4(0.15f, 0.15f, 0.15f, 1);
 
             Masking = true;
+        }
+
+        public LocalisableString Text
+        {
+            get => SpriteText.Text;
+            set => SpriteText.Text = value;
+        }
+
+        private Color4 lightColour = Color4.BlueViolet;
+
+        public Color4 LightColour
+        {
+            get => lightColour;
+            set
+            {
+                lightColour = value;
+                if (IsLoaded) Reset();
+            }
         }
 
         protected override void LoadComplete()

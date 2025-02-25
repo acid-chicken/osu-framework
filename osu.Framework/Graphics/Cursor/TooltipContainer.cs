@@ -1,15 +1,19 @@
 ﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using System;
 using System.Collections.Generic;
-using System.Linq;
+using osu.Framework.Allocation;
 using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.Primitives;
 using osu.Framework.Graphics.Shapes;
 using osu.Framework.Graphics.Sprites;
 using osu.Framework.Input;
+using osu.Framework.Input.StateChanges;
 using osu.Framework.Localisation;
+using osu.Framework.Platform;
 using osuTK;
 using osuTK.Graphics;
 
@@ -18,7 +22,7 @@ namespace osu.Framework.Graphics.Cursor
     /// <summary>
     /// Displays Tooltips for all its children that inherit from the <see cref="IHasTooltip"/> or <see cref="IHasCustomTooltip"/> interfaces. Keep in mind that only children with <see cref="Drawable.HandlePositionalInput"/> set to true will be checked for their tooltips.
     /// </summary>
-    public class TooltipContainer : CursorEffectContainer<TooltipContainer, ITooltipContentProvider>
+    public partial class TooltipContainer : CursorEffectContainer<TooltipContainer, ITooltipContentProvider>
     {
         private readonly CursorContainer cursorContainer;
         private readonly ITooltip defaultTooltip;
@@ -48,6 +52,9 @@ namespace osu.Framework.Graphics.Cursor
 
         private readonly Container content;
         protected override Container<Drawable> Content => content;
+
+        [Resolved]
+        private GameHost host { get; set; }
 
         /// <summary>
         /// Creates a tooltip container where the tooltip is positioned at the bottom-right of
@@ -90,7 +97,14 @@ namespace osu.Framework.Graphics.Cursor
 
         private Vector2 computeTooltipPosition()
         {
-            // Update the position of the displayed tooltip.
+            if (inputManager.CurrentState.Mouse.LastSource is ISourcedFromTouch)
+                return computeTouchTooltipPosition();
+
+            return computeMouseTooltipPosition();
+        }
+
+        private Vector2 computeMouseTooltipPosition()
+        {
             // Our goal is to find the bounding circle of the cursor in screen-space, and to
             // position the top-left corner of the tooltip at the circle's southeast position.
             float boundingRadius;
@@ -128,6 +142,41 @@ namespace osu.Framework.Graphics.Cursor
             return tooltipPos;
         }
 
+        private Vector2 computeTouchTooltipPosition()
+        {
+            Vector2 touchCentre = ToLocalSpace(inputManager.CurrentState.Mouse.Position);
+
+            const float space_lenience = 5f;
+
+            // the screen's ppi affects how farther away should the tooltip be to not be obstructed by the user's fingers.
+            // todo: this is broken on Android because SDL returns pixel density via SDL_GetWindowDisplayScale rather than window size / SDL_GetWindowPixelDensity.
+            float displayScale = host.Window?.Scale ?? 1f;
+
+            // spacing between the user's finger and the tooltip
+            float horizontalSpacing = 25f * displayScale;
+            float verticalSpacing = 30f * displayScale;
+
+            Vector2 tooltipSize = CurrentTooltip.DrawSize;
+            Vector2 tooltipBottomCentre = touchCentre + new Vector2(0, -verticalSpacing);
+            Vector2 tooltipCentreRight = touchCentre + new Vector2(-horizontalSpacing, 0);
+            Vector2 tooltipCentreLeft = touchCentre + new Vector2(horizontalSpacing, 0);
+
+            bool hasSpaceToDisplayAtTop = tooltipBottomCentre.Y >= tooltipSize.Y - space_lenience;
+            bool hasSpaceToDisplayAtLeft = tooltipCentreRight.X >= tooltipSize.X - space_lenience;
+
+            Vector2 tooltipPos;
+
+            if (hasSpaceToDisplayAtTop)
+                tooltipPos = tooltipBottomCentre - new Vector2(tooltipSize.X / 2, tooltipSize.Y);
+            else if (hasSpaceToDisplayAtLeft)
+                tooltipPos = tooltipCentreRight - new Vector2(tooltipSize.X, tooltipSize.Y / 2);
+            else
+                tooltipPos = tooltipCentreLeft - new Vector2(0, tooltipSize.Y / 2);
+
+            tooltipPos.X = Math.Clamp(tooltipPos.X, 0, DrawWidth - tooltipSize.X);
+            return tooltipPos;
+        }
+
         private struct TimedPosition
         {
             public double Time;
@@ -152,7 +201,7 @@ namespace osu.Framework.Graphics.Cursor
                     CurrentTooltip.SetContent(getTargetContent(target));
                 else
                 {
-                    RemoveInternal((Drawable)CurrentTooltip);
+                    RemoveInternal((Drawable)CurrentTooltip, false);
                     CurrentTooltip = proposedTooltip;
                     AddInternal((Drawable)proposedTooltip);
                 }
@@ -182,7 +231,7 @@ namespace osu.Framework.Graphics.Cursor
             object targetContent = getTargetContent(target);
 
             if (targetContent is LocalisableString localisableString)
-                return !string.IsNullOrEmpty(localisableString.Data?.ToString());
+                return !LocalisableString.IsNullOrEmpty(localisableString);
 
             return targetContent != null;
         }
@@ -253,24 +302,34 @@ namespace osu.Framework.Graphics.Cursor
             if (appearDelay > 0 && (recentMousePositions.Count == 0 || lastRecordedPositionTime - recentMousePositions[0].Time < appearDelay - positionRecordInterval))
                 return null;
 
-            recentMousePositions.RemoveAll(t => Time.Current - t.Time > appearDelay);
+            for (int i = recentMousePositions.Count - 1; i >= 0; i--)
+            {
+                if (Time.Current - recentMousePositions[i].Time > appearDelay)
+                    recentMousePositions.RemoveAt(i);
+            }
 
             // For determining whether to show a tooltip we first select only those positions
             // which happened within a shorter, alpha-adjusted appear delay.
             double alphaModifiedAppearDelay = (1 - CurrentTooltip.Alpha) * appearDelay;
-            var relevantPositions = recentMousePositions.Where(t => Time.Current - t.Time <= alphaModifiedAppearDelay);
 
             // We then check whether all relevant positions fall within a radius of AppearRadius within the
             // first relevant position. If so, then the mouse has stayed within a small circular region of
             // AppearRadius for the duration of the modified appear delay, and we therefore want to display
             // the tooltip.
-            Vector2 first = relevantPositions.FirstOrDefault().Position;
+            Vector2? first = null;
             float appearRadiusSq = AppearRadius * AppearRadius;
 
-            if (relevantPositions.All(t => Vector2Extensions.DistanceSquared(t.Position, first) < appearRadiusSq))
-                return targetCandidate;
+            foreach (var mPos in recentMousePositions)
+            {
+                if (Time.Current - mPos.Time > alphaModifiedAppearDelay)
+                    continue;
 
-            return null;
+                first ??= mPos.Position;
+                if (Vector2Extensions.DistanceSquared(mPos.Position, (Vector2)first) > appearRadiusSq)
+                    return null;
+            }
+
+            return targetCandidate;
         }
 
         /// <summary>
@@ -300,14 +359,14 @@ namespace osu.Framework.Graphics.Cursor
         /// </summary>
         /// <param name="tooltipTarget">The target of the tooltip.</param>
         /// <returns>True if the currently visible tooltip should be hidden, false otherwise.</returns>
-        protected virtual bool ShallHideTooltip(ITooltipContentProvider tooltipTarget) => !hasValidTooltip(tooltipTarget) || !tooltipTarget.IsHovered && !tooltipTarget.IsDragged;
+        protected virtual bool ShallHideTooltip(ITooltipContentProvider tooltipTarget) => !hasValidTooltip(tooltipTarget) || (!tooltipTarget.IsHovered && !tooltipTarget.IsDragged);
 
         private ITooltip getTooltip(ITooltipContentProvider target) => (target as IHasCustomTooltip)?.GetCustomTooltip() ?? defaultTooltip;
 
         /// <summary>
         /// The default tooltip. Simply displays its text on a gray background and performs no easing.
         /// </summary>
-        public class Tooltip : VisibilityContainer, ITooltip<LocalisableString>
+        public partial class Tooltip : VisibilityContainer, ITooltip<LocalisableString>
         {
             private readonly SpriteText text;
 

@@ -1,4 +1,4 @@
-// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
 using System.Linq;
@@ -58,10 +58,9 @@ namespace osu.Framework.Logging
             ThreadPool.GetMaxThreads(out int workerMax, out int completionMax);
 
             Logger.Log("🎱 Thread pool");
-            // TODO: use after net6
-            // Logger.Log($"threads:         {ThreadPool.ThreadCount:#,0}");
-            // Logger.Log($"work pending:    {ThreadPool.PendingWorkItemCount:#,0}");
-            // Logger.Log($"work completed:  {ThreadPool.CompletedWorkItemCount:#,0}");
+            Logger.Log($"threads:         {ThreadPool.ThreadCount:#,0}");
+            Logger.Log($"work pending:    {ThreadPool.PendingWorkItemCount:#,0}");
+            Logger.Log($"work completed:  {ThreadPool.CompletedWorkItemCount:#,0}");
             Logger.Log($"worker:          min {workerMin,-6:#,0} max {workerMax,-6:#,0} available {workerAvailable,-6:#,0}");
             Logger.Log($"completion:      min {completionMin,-6:#,0} max {completionMax,-6:#,0} available {completionAvailable,-6:#,0}");
         }
