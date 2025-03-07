@@ -1,6 +1,8 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -8,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using osu.Framework.Allocation;
+using osu.Framework.Configuration;
 using osu.Framework.Development;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Shapes;
@@ -17,10 +20,13 @@ using osuTK;
 
 namespace osu.Framework.Tests.Visual.Drawables
 {
-    public class TestSceneSynchronizationContext : FrameworkTestScene
+    public partial class TestSceneSynchronizationContext : FrameworkTestScene
     {
         [Resolved]
         private GameHost host { get; set; }
+
+        [Resolved]
+        private FrameworkConfigManager config { get; set; }
 
         private AsyncPerformingBox box;
 
@@ -194,7 +200,30 @@ namespace osu.Framework.Tests.Visual.Drawables
             AddUntilStep("has spun", () => box.Rotation == 0);
         }
 
-        public class AsyncPerformingBox : Box
+        [Test]
+        public void TestExecutionMode()
+        {
+            AddStep("add box", () => Child = box = new AsyncPerformingBox(true));
+            AddAssert("not spun", () => box.Rotation == 0);
+
+            AddStep("toggle execution mode", toggleExecutionMode);
+
+            AddStep("trigger", () => box.ReleaseAsyncLoadCompleteLock());
+            AddUntilStep("has spun", () => box.Rotation == 180);
+
+            AddStep("revert execution mode", toggleExecutionMode);
+
+            void toggleExecutionMode()
+            {
+                var executionMode = config.GetBindable<ExecutionMode>(FrameworkSetting.ExecutionMode);
+
+                executionMode.Value = executionMode.Value == ExecutionMode.MultiThreaded
+                    ? ExecutionMode.SingleThread
+                    : ExecutionMode.MultiThreaded;
+            }
+        }
+
+        public partial class AsyncPerformingBox : Box
         {
             private readonly bool performAsyncLoadComplete;
 
@@ -210,6 +239,7 @@ namespace osu.Framework.Tests.Visual.Drawables
                 Origin = Anchor.Centre;
             }
 
+            // ReSharper disable once AsyncVoidMethod
             protected override async void LoadComplete()
             {
                 base.LoadComplete();

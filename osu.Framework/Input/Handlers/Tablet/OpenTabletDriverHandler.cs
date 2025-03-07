@@ -1,15 +1,16 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
-#if NET5_0
+using System.Collections.Generic;
 using System.Linq;
-using JetBrains.Annotations;
+using System.Threading.Tasks;
 using OpenTabletDriver;
 using OpenTabletDriver.Plugin;
 using OpenTabletDriver.Plugin.Output;
 using OpenTabletDriver.Plugin.Platform.Pointer;
 using OpenTabletDriver.Plugin.Tablet;
 using osu.Framework.Bindables;
+using osu.Framework.Extensions;
 using osu.Framework.Input.StateChanges;
 using osu.Framework.Platform;
 using osu.Framework.Statistics;
@@ -19,12 +20,17 @@ namespace osu.Framework.Input.Handlers.Tablet
 {
     public class OpenTabletDriverHandler : InputHandler, IAbsolutePointer, IRelativePointer, IPressureHandler, ITabletHandler
     {
-        private TabletDriver tabletDriver;
+        private static readonly GlobalStatistic<ulong> statistic_total_events = GlobalStatistics.Get<ulong>(StatisticGroupFor<OpenTabletDriverHandler>(), "Total events");
 
-        [CanBeNull]
-        private InputDeviceTree device;
+        private TabletDriver? tabletDriver;
 
-        private AbsoluteOutputMode outputMode;
+        private InputDeviceTree? device;
+
+        private AbsoluteOutputMode outputMode = null!;
+
+        private GameHost host = null!;
+
+        public override string Description => "Tablet";
 
         public override bool IsActive => tabletDriver != null;
 
@@ -34,69 +40,101 @@ namespace osu.Framework.Input.Handlers.Tablet
 
         public Bindable<float> Rotation { get; } = new Bindable<float>();
 
-        public IBindable<TabletInfo> Tablet => tablet;
+        public BindableFloat PressureThreshold { get; } = new BindableFloat(0.0f)
+        {
+            MinValue = 0f,
+            MaxValue = 1f,
+            Precision = 0.005f,
+        };
 
-        private readonly Bindable<TabletInfo> tablet = new Bindable<TabletInfo>();
+        public IBindable<TabletInfo?> Tablet => tablet;
+
+        private readonly Bindable<TabletInfo?> tablet = new Bindable<TabletInfo?>();
+
+        private Task? lastInitTask;
 
         public override bool Initialize(GameHost host)
         {
+            this.host = host;
+
             outputMode = new AbsoluteTabletMode(this);
 
             host.Window.Resized += () => updateOutputArea(host.Window);
 
-            AreaOffset.BindValueChanged(_ => updateInputArea(device));
-            AreaSize.BindValueChanged(_ => updateInputArea(device), true);
-            Rotation.BindValueChanged(_ => updateInputArea(device), true);
+            AreaOffset.BindValueChanged(_ => updateTabletAndInputArea(device));
+            AreaSize.BindValueChanged(_ => updateTabletAndInputArea(device));
+            Rotation.BindValueChanged(_ => updateTabletAndInputArea(device), true);
 
-            Enabled.BindValueChanged(d =>
+            Enabled.BindValueChanged(enabled =>
             {
-                if (d.NewValue && tabletDriver == null)
+                if (enabled.NewValue)
                 {
-                    tabletDriver = TabletDriver.Create();
-                    tabletDriver.TabletsChanged += (s, e) =>
+                    lastInitTask = Task.Run(() =>
                     {
-                        device = e.Any() ? tabletDriver.InputDevices.First() : null;
-
-                        if (device != null)
-                        {
-                            device.OutputMode = outputMode;
-                            outputMode.Tablet = device.CreateReference();
-
-                            updateInputArea(device);
-                            updateOutputArea(host.Window);
-                        }
-                    };
-                    tabletDriver.DeviceReported += handleDeviceReported;
-                    tabletDriver.Detect();
+                        tabletDriver = TabletDriver.Create();
+                        tabletDriver.PostLog = Log;
+                        tabletDriver.TabletsChanged += handleTabletsChanged;
+                        tabletDriver.DeviceReported += handleDeviceReported;
+                        tabletDriver.Detect();
+                    });
                 }
-                else if (!d.NewValue && tabletDriver != null)
+                else
                 {
-                    tabletDriver.Dispose();
-                    tabletDriver = null;
+                    lastInitTask?.WaitSafely();
+
+                    if (tabletDriver != null)
+                    {
+                        tabletDriver.DeviceReported -= handleDeviceReported;
+                        tabletDriver.TabletsChanged -= handleTabletsChanged;
+                        tabletDriver.Dispose();
+                        tabletDriver = null;
+                    }
                 }
             }, true);
 
             return true;
         }
 
-        void IAbsolutePointer.SetPosition(System.Numerics.Vector2 pos) => enqueueInput(new MousePositionAbsoluteInput { Position = new Vector2(pos.X, pos.Y) });
+        private TabletPenDeviceType lastTabletDeviceType = TabletPenDeviceType.Unknown;
 
-        void IRelativePointer.SetPosition(System.Numerics.Vector2 delta) => enqueueInput(new MousePositionRelativeInput { Delta = new Vector2(delta.X, delta.Y) });
-
-        void IPressureHandler.SetPressure(float percentage) => enqueueInput(new MouseButtonInput(osuTK.Input.MouseButton.Left, percentage > 0));
-
-        private void handleDeviceReported(object sender, IDeviceReport report)
+        void IAbsolutePointer.SetPosition(System.Numerics.Vector2 pos)
         {
-            switch (report)
-            {
-                case ITabletReport tabletReport:
-                    handleTabletReport(tabletReport);
-                    break;
+            lastTabletDeviceType = TabletPenDeviceType.Unknown;
+            enqueueInput(new MousePositionAbsoluteInputFromPen { Position = new Vector2(pos.X, pos.Y), DeviceType = lastTabletDeviceType });
+        }
 
-                case IAuxReport auxiliaryReport:
-                    handleAuxiliaryReport(auxiliaryReport);
-                    break;
+        void IRelativePointer.SetPosition(System.Numerics.Vector2 delta)
+        {
+            lastTabletDeviceType = TabletPenDeviceType.Indirect;
+            enqueueInput(new MousePositionRelativeInputFromPen { Delta = new Vector2(delta.X, delta.Y), DeviceType = lastTabletDeviceType });
+        }
+
+        void IPressureHandler.SetPressure(float percentage) => enqueueInput(new MouseButtonInputFromPen(percentage > PressureThreshold.Value) { DeviceType = lastTabletDeviceType });
+
+        private void handleTabletsChanged(object? sender, IEnumerable<TabletReference> tablets)
+        {
+            device = tablets.Any() ? tabletDriver?.InputDevices.First() : null;
+
+            if (device != null)
+            {
+                // Important to reinitialise outputMode here as the previous one is likely disposed.
+                device.OutputMode = outputMode = new AbsoluteTabletMode(this);
+                outputMode.Tablet = device.CreateReference();
+
+                updateTabletAndInputArea(device);
+                updateOutputArea(host.Window);
             }
+            else
+                tablet.Value = null;
+        }
+
+        private void handleDeviceReported(object? sender, IDeviceReport report)
+        {
+            if (report is ITabletReport tabletReport)
+                handleTabletReport(tabletReport);
+
+            if (report is IAuxReport auxiliaryReport)
+                handleAuxiliaryReport(auxiliaryReport);
         }
 
         private void updateOutputArea(IWindow window)
@@ -122,7 +160,7 @@ namespace osu.Framework.Input.Handlers.Tablet
             }
         }
 
-        private void updateInputArea([CanBeNull] InputDeviceTree inputDevice)
+        private void updateTabletAndInputArea(InputDeviceTree? inputDevice)
         {
             if (inputDevice == null)
                 return;
@@ -187,7 +225,7 @@ namespace osu.Framework.Input.Handlers.Tablet
         {
             PendingInputs.Enqueue(input);
             FrameStatistics.Increment(StatisticsCounterType.TabletEvents);
+            statistic_total_events.Value++;
         }
     }
 }
-#endif

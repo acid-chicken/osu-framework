@@ -2,6 +2,7 @@
 // See the LICENCE file in the repository root for full licence text.
 
 using System;
+using System.Linq;
 using osu.Framework.Allocation;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
@@ -12,13 +13,13 @@ using osuTK;
 
 namespace osu.Framework.Tests.Visual.Platform
 {
-    public class TestScenePresentFileExternally : FrameworkTestScene
+    public partial class TestScenePresentFileExternally : FrameworkTestScene
     {
         [Resolved]
-        private GameHost host { get; set; }
+        private GameHost host { get; set; } = null!;
 
         [Resolved]
-        private Storage storage { get; set; }
+        private Storage storage { get; set; } = null!;
 
         protected override void LoadComplete()
         {
@@ -78,7 +79,7 @@ namespace osu.Framework.Tests.Visual.Platform
                     ),
                     new ButtonWithDescription
                     (
-                        () => logStorage.PresentFileExternally(@"runtime.log"),
+                        () => logStorage.PresentFileExternally(logStorage.GetFiles(string.Empty, "*runtime*").First()),
                         @"show runtime.log",
                         @"Opens: 'logs'   Selected: 'runtime.log'"
                     ),
@@ -92,7 +93,7 @@ namespace osu.Framework.Tests.Visual.Platform
             };
         }
 
-        private class ButtonWithDescription : FillFlowContainer
+        private partial class ButtonWithDescription : FillFlowContainer
         {
             public ButtonWithDescription(Action action, string text, string description)
             {

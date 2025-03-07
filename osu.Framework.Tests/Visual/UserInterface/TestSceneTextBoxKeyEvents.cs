@@ -1,6 +1,8 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using System.Collections.Generic;
 using System.Linq;
 using NUnit.Framework;
@@ -9,16 +11,17 @@ using osu.Framework.Input;
 using osu.Framework.Input.Events;
 using osu.Framework.Platform;
 using osu.Framework.Testing;
+using osu.Framework.Testing.Input;
 using osuTK;
 using osuTK.Input;
 
 namespace osu.Framework.Tests.Visual.UserInterface
 {
-    public class TestSceneTextBoxKeyEvents : ManualInputManagerTestScene
+    public partial class TestSceneTextBoxKeyEvents : ManualInputManagerTestScene
     {
         private KeyEventQueuesTextBox textBox;
 
-        private TestSceneTextBoxEvents.ManualTextInput textInput;
+        private ManualTextInputSource textInput;
 
         [Resolved]
         private GameHost host { get; set; }
@@ -261,7 +264,7 @@ namespace osu.Framework.Tests.Visual.UserInterface
             });
         }
 
-        private class KeyEventQueuesTextBox : TestSceneTextBoxEvents.EventQueuesTextBox
+        private partial class KeyEventQueuesTextBox : TestSceneTextBoxEvents.EventQueuesTextBox
         {
             public readonly Queue<bool> KeyDownQueue = new Queue<bool>();
             public readonly Queue<bool> KeyDownRepeatQueue = new Queue<bool>();

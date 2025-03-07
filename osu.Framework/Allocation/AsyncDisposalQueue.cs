@@ -1,6 +1,8 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -15,7 +17,7 @@ namespace osu.Framework.Allocation
     /// </summary>
     internal static class AsyncDisposalQueue
     {
-        private static readonly GlobalStatistic<string> last_disposal = GlobalStatistics.Get<string>("Drawable", "Last disposal");
+        private static readonly GlobalStatistic<Type> last_disposal = GlobalStatistics.Get<Type>("Drawable", "Last disposal");
 
         private static Task runTask;
 
@@ -60,7 +62,7 @@ namespace osu.Framework.Allocation
                     {
                         ref var item = ref itemsToDispose[i];
 
-                        last_disposal.Value = item.ToString();
+                        last_disposal.Value = item.GetType();
 
                         item.Dispose();
                         item = null;

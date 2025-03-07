@@ -1,6 +1,8 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Linq;
@@ -13,7 +15,7 @@ using osuTK;
 
 namespace osu.Framework.Graphics.Visualisation.Audio
 {
-    internal class AudioMixerVisualiser : ToolWindow
+    internal partial class AudioMixerVisualiser : ToolWindow
     {
         [Resolved]
         private AudioManager audioManager { get; set; }
@@ -24,7 +26,7 @@ namespace osu.Framework.Graphics.Visualisation.Audio
         public AudioMixerVisualiser()
             : base("AudioMixer", "(Ctrl+F9 to toggle)")
         {
-            ScrollContent.Expire();
+            MainHorizontalContent.Clear();
             MainHorizontalContent.Add(new BasicScrollContainer(Direction.Horizontal)
             {
                 RelativeSizeAxes = Axes.Y,
@@ -62,7 +64,7 @@ namespace osu.Framework.Graphics.Visualisation.Audio
 
                 case NotifyCollectionChangedAction.Remove:
                     Debug.Assert(e.OldItems != null);
-                    mixerFlow.RemoveAll(m => e.OldItems.OfType<AudioMixer>().Contains(m.Mixer));
+                    mixerFlow.RemoveAll(m => e.OldItems.OfType<AudioMixer>().Contains(m.Mixer), true);
                     break;
             }
         });
