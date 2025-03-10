@@ -1,6 +1,8 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using System.Threading;
 using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.Sprites;
@@ -15,7 +17,7 @@ using osu.Framework.Input.Events;
 
 namespace osu.Framework.Graphics.Visualisation
 {
-    internal class LogOverlay : OverlayContainer
+    internal partial class LogOverlay : OverlayContainer
     {
         private readonly FillFlowContainer flow;
 
@@ -136,7 +138,7 @@ namespace osu.Framework.Graphics.Visualisation
         }
     }
 
-    internal class DrawableLogEntry : Container
+    internal partial class DrawableLogEntry : Container
     {
         private const float target_box_width = 65;
 

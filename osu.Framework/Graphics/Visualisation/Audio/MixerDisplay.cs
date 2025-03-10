@@ -1,4 +1,4 @@
-// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
 using System.Linq;
@@ -14,7 +14,7 @@ using osuTK.Graphics;
 
 namespace osu.Framework.Graphics.Visualisation.Audio
 {
-    public class MixerDisplay : CompositeDrawable
+    public partial class MixerDisplay : CompositeDrawable
     {
         public readonly AudioMixer Mixer;
 
@@ -110,7 +110,7 @@ namespace osu.Framework.Graphics.Visualisation.Audio
                     mixerChannelsContainer.Add(new AudioChannelDisplay(channel));
             }
 
-            mixerChannelsContainer.RemoveAll(ch => !channels.Contains(ch.ChannelHandle));
+            mixerChannelsContainer.RemoveAll(ch => !channels.Contains(ch.ChannelHandle), true);
         }
     }
 }

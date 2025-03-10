@@ -1,12 +1,17 @@
 ﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using NUnit.Framework;
+using osu.Framework.Allocation;
 using osu.Framework.Bindables;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
+using osu.Framework.Graphics.Shapes;
 using osu.Framework.Graphics.Sprites;
 using osu.Framework.Graphics.UserInterface;
+using osu.Framework.Input.Events;
 using osu.Framework.Testing;
 using osu.Framework.Utils;
 using osuTK;
@@ -15,13 +20,14 @@ using osuTK.Input;
 
 namespace osu.Framework.Tests.Visual.UserInterface
 {
-    public class TestSceneSliderBar : ManualInputManagerTestScene
+    public partial class TestSceneSliderBar : ManualInputManagerTestScene
     {
         // ReSharper disable once PrivateFieldCanBeConvertedToLocalVariable
         private readonly BindableDouble sliderBarValue; //keep a reference to avoid GC of the bindable
         private readonly SpriteText sliderBarText;
         private readonly TestSliderBar sliderBar;
         private readonly SliderBar<double> transferOnCommitSliderBar;
+        private readonly TestSliderBarWithNub sliderBarWithNub;
 
         public TestSceneSliderBar()
         {
@@ -53,6 +59,7 @@ namespace osu.Framework.Tests.Visual.UserInterface
                         Size = new Vector2(200, 50),
                         BackgroundColour = Color4.White,
                         SelectionColour = Color4.Pink,
+                        FocusColour = Color4.OrangeRed,
                         KeyboardStep = 1,
                         Current = sliderBarValue
                     },
@@ -66,6 +73,7 @@ namespace osu.Framework.Tests.Visual.UserInterface
                         RangePadding = 20,
                         BackgroundColour = Color4.White,
                         SelectionColour = Color4.Pink,
+                        FocusColour = Color4.OrangeRed,
                         KeyboardStep = 1,
                         Current = sliderBarValue
                     },
@@ -79,6 +87,20 @@ namespace osu.Framework.Tests.Visual.UserInterface
                         Size = new Vector2(200, 10),
                         BackgroundColour = Color4.White,
                         SelectionColour = Color4.Pink,
+                        FocusColour = Color4.OrangeRed,
+                        KeyboardStep = 1,
+                        Current = sliderBarValue
+                    },
+                    new SpriteText
+                    {
+                        Text = "w/ Nub:",
+                    },
+                    sliderBarWithNub = new TestSliderBarWithNub
+                    {
+                        Size = new Vector2(200, 10),
+                        BackgroundColour = Color4.White,
+                        SelectionColour = Color4.Pink,
+                        FocusColour = Color4.OrangeRed,
                         KeyboardStep = 1,
                         Current = sliderBarValue
                     },
@@ -91,25 +113,28 @@ namespace osu.Framework.Tests.Visual.UserInterface
         {
             sliderBar.Current.Disabled = false;
             sliderBar.Current.Value = 0;
+            sliderBar.GetContainingFocusManager()!.ChangeFocus(null);
+            sliderBarWithNub.GetContainingFocusManager()!.ChangeFocus(null);
         });
 
         [Test]
         public void TestVerticalDragHasNoEffect()
         {
-            checkValue(0, false);
+            checkValue(0);
             AddStep("Move Cursor",
                 () => { InputManager.MoveMouseTo(sliderBar.ToScreenSpace(sliderBar.DrawSize * new Vector2(0.75f, 0.0f))); });
             AddStep("Click", () => { InputManager.PressButton(MouseButton.Left); });
             AddStep("Drag",
                 () => { InputManager.MoveMouseTo(sliderBar.ToScreenSpace(sliderBar.DrawSize * new Vector2(0.75f, 1f))); });
             AddStep("Release Click", () => { InputManager.ReleaseButton(MouseButton.Left); });
-            checkValue(0, false);
+            checkValue(0);
+            AddAssert("Slider has no focus", () => !sliderBar.HasFocus);
         }
 
         [Test]
         public void TestDragOutReleaseInHasNoEffect()
         {
-            checkValue(0, false);
+            checkValue(0);
             AddStep("Move Cursor",
                 () => { InputManager.MoveMouseTo(sliderBar.ToScreenSpace(sliderBar.DrawSize * new Vector2(0.75f, 0.0f))); });
             AddStep("Click", () => { InputManager.PressButton(MouseButton.Left); });
@@ -117,7 +142,8 @@ namespace osu.Framework.Tests.Visual.UserInterface
             AddStep("Drag Left", () => { InputManager.MoveMouseTo(sliderBar.ToScreenSpace(sliderBar.DrawSize * new Vector2(0.25f, 1.5f))); });
             AddStep("Drag Up", () => { InputManager.MoveMouseTo(sliderBar.ToScreenSpace(sliderBar.DrawSize * new Vector2(0.25f, 0.5f))); });
             AddStep("Release Click", () => { InputManager.ReleaseButton(MouseButton.Left); });
-            checkValue(0, false);
+            checkValue(0);
+            AddAssert("Slider has focus", () => sliderBar.HasFocus);
         }
 
         [Test]
@@ -129,7 +155,7 @@ namespace osu.Framework.Tests.Visual.UserInterface
                 InputManager.ReleaseKey(Key.Right);
             });
 
-            checkValue(0, true);
+            checkValue(0);
 
             AddStep("move mouse inside", () =>
             {
@@ -141,7 +167,24 @@ namespace osu.Framework.Tests.Visual.UserInterface
                 InputManager.PressKey(Key.Right);
                 InputManager.ReleaseKey(Key.Right);
             });
-            checkValue(1, false);
+            checkValue(1);
+
+            AddStep("Click slider", () => InputManager.Click(MouseButton.Left));
+            checkValue(-5);
+
+            AddAssert("Slider has focus", () => sliderBar.HasFocus);
+
+            AddStep("move mouse outside", () =>
+            {
+                InputManager.MoveMouseTo(sliderBar.ToScreenSpace(sliderBar.DrawSize * new Vector2(2f, 0.5f)));
+            });
+
+            AddStep("Press right arrow key", () =>
+            {
+                InputManager.PressKey(Key.Right);
+                InputManager.ReleaseKey(Key.Right);
+            });
+            checkValue(-4);
         }
 
         [TestCase(false)]
@@ -156,7 +199,7 @@ namespace osu.Framework.Tests.Visual.UserInterface
                 InputManager.Click(MouseButton.Left);
             });
             // We're translating to/from screen-space coordinates for click coordinates so we want to be more lenient with the value comparisons in these tests
-            checkValue(-5, disabled);
+            checkValue(disabled ? 0 : -5);
             AddStep("Press left arrow key", () =>
             {
                 bool before = sliderBar.IsHovered;
@@ -165,7 +208,7 @@ namespace osu.Framework.Tests.Visual.UserInterface
                 InputManager.ReleaseKey(Key.Left);
                 sliderBar.IsHovered = before;
             });
-            checkValue(-6, disabled);
+            checkValue(disabled ? 0 : -6);
             AddStep("Click at 75% mark, holding shift", () =>
             {
                 InputManager.PressKey(Key.LShift);
@@ -173,7 +216,7 @@ namespace osu.Framework.Tests.Visual.UserInterface
                 InputManager.Click(MouseButton.Left);
                 InputManager.ReleaseKey(Key.LShift);
             });
-            checkValue(5, disabled);
+            checkValue(disabled ? 0 : 5);
         }
 
         [TestCase(false)]
@@ -187,7 +230,7 @@ namespace osu.Framework.Tests.Visual.UserInterface
                 InputManager.MoveMouseTo(sliderBar.ToScreenSpace(sliderBar.DrawSize * new Vector2(0.8f, 0.5f)));
                 InputManager.Click(MouseButton.Left);
             });
-            checkValue(6, disabled);
+            checkValue(disabled ? 0 : 6);
 
             // These steps are broken up so we can see each of the steps being performed independently
             AddStep("Move Cursor",
@@ -195,26 +238,104 @@ namespace osu.Framework.Tests.Visual.UserInterface
             AddStep("Click", () => { InputManager.PressButton(MouseButton.Left); });
             AddStep("Drag",
                 () => { InputManager.MoveMouseTo(transferOnCommitSliderBar.ToScreenSpace(transferOnCommitSliderBar.DrawSize * new Vector2(0.25f, 0.5f))); });
-            checkValue(6, disabled);
+            checkValue(disabled ? 0 : 6);
             AddStep("Release Click", () => { InputManager.ReleaseButton(MouseButton.Left); });
-            checkValue(-5, disabled);
+            checkValue(disabled ? 0 : -5);
         }
 
-        private void checkValue(int expected, bool disabled)
+        [Test]
+        public void TestRevertValueOnDisabledDuringDrag()
         {
-            if (disabled)
-                AddAssert("value unchanged (disabled)", () => Precision.AlmostEquals(sliderBarValue.Value, 0, Precision.FLOAT_EPSILON));
-            else
-                AddAssert($"Value == {expected}", () => Precision.AlmostEquals(sliderBarValue.Value, expected, Precision.FLOAT_EPSILON));
+            checkValue(0);
+
+            AddStep("Move Cursor", () => { InputManager.MoveMouseTo(transferOnCommitSliderBar.ToScreenSpace(transferOnCommitSliderBar.DrawSize * new Vector2(0.75f, 0.5f))); });
+            AddStep("Click", () => { InputManager.PressButton(MouseButton.Left); });
+            AddStep("Drag", () => { InputManager.MoveMouseTo(transferOnCommitSliderBar.ToScreenSpace(transferOnCommitSliderBar.DrawSize * new Vector2(0.25f, 0.5f))); });
+
+            checkValue(0);
+
+            AddStep("set disabled", () => transferOnCommitSliderBar.Current.Disabled = true);
+            AddStep("Release Click", () => { InputManager.ReleaseButton(MouseButton.Left); });
+
+            checkValue(0);
         }
+
+        [Test]
+        public void TestAbsoluteDrag()
+        {
+            checkValue(0);
+            AddStep("Move Cursor",
+                () => { InputManager.MoveMouseTo(sliderBarWithNub.ToScreenSpace(sliderBarWithNub.DrawSize * new Vector2(0.1f, 0.5f))); });
+            AddStep("Click", () => { InputManager.PressButton(MouseButton.Left); });
+            AddStep("Drag",
+                () => { InputManager.MoveMouseTo(sliderBarWithNub.ToScreenSpace(sliderBarWithNub.DrawSize * new Vector2(0.4f, 1f))); });
+            AddStep("Release Click", () => { InputManager.ReleaseButton(MouseButton.Left); });
+            checkValue(-2);
+            AddAssert("Slider has focus", () => sliderBarWithNub.HasFocus);
+        }
+
+        [Test]
+        public void TestRelativeDrag()
+        {
+            checkValue(0);
+            AddStep("Move Cursor",
+                () => { InputManager.MoveMouseTo(sliderBarWithNub.ToScreenSpace(sliderBarWithNub.DrawSize * new Vector2(0.6f, 0.5f))); });
+            AddStep("Click", () => { InputManager.PressButton(MouseButton.Left); });
+            AddStep("Drag",
+                () => { InputManager.MoveMouseTo(sliderBarWithNub.ToScreenSpace(sliderBarWithNub.DrawSize * new Vector2(0.75f, 1f))); });
+            AddStep("Release Click", () => { InputManager.ReleaseButton(MouseButton.Left); });
+            checkValue(3);
+            AddAssert("Slider has focus", () => sliderBarWithNub.HasFocus);
+        }
+
+        [Test]
+        public void TestRelativeClick()
+        {
+            checkValue(0);
+            AddStep("Move Cursor",
+                () => { InputManager.MoveMouseTo(sliderBarWithNub.ToScreenSpace(sliderBarWithNub.DrawSize * new Vector2(0.6f, 0.5f))); });
+            AddStep("Click", () => { InputManager.PressButton(MouseButton.Left); });
+            AddStep("Release Click", () => { InputManager.ReleaseButton(MouseButton.Left); });
+            checkValue(0);
+        }
+
+        private void checkValue(int expected) =>
+            AddAssert($"Value == {expected}", () => sliderBarValue.Value, () => Is.EqualTo(expected).Within(Precision.FLOAT_EPSILON));
 
         private void sliderBarValueChanged(ValueChangedEvent<double> args)
         {
             sliderBarText.Text = $"Value of Bindable: {args.NewValue:N}";
         }
 
-        public class TestSliderBar : BasicSliderBar<double>
+        public partial class TestSliderBar : BasicSliderBar<double>
         {
+        }
+
+        public partial class TestSliderBarWithNub : BasicSliderBar<double>
+        {
+            private Box nub;
+
+            [BackgroundDependencyLoader]
+            private void load()
+            {
+                Add(nub = new Box
+                {
+                    Colour = Color4.Blue,
+                    Origin = Anchor.Centre,
+                    Anchor = Anchor.CentreLeft,
+                    RelativeSizeAxes = Axes.Y,
+                    RelativePositionAxes = Axes.X,
+                    Width = 80,
+                });
+            }
+
+            protected override bool ShouldHandleAsRelativeDrag(MouseDownEvent e) => nub.ReceivePositionalInputAt(e.ScreenSpaceMouseDownPosition);
+
+            protected override void UpdateValue(float value)
+            {
+                base.UpdateValue(value);
+                nub.X = value;
+            }
         }
     }
 }

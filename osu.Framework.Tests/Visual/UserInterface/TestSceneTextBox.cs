@@ -1,9 +1,10 @@
 ﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using System.Linq;
 using NUnit.Framework;
-using osu.Framework.Extensions;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.Primitives;
@@ -14,12 +15,11 @@ using osu.Framework.Input;
 using osu.Framework.Testing;
 using osu.Framework.Utils;
 using osuTK;
-using osuTK.Graphics;
 using osuTK.Input;
 
 namespace osu.Framework.Tests.Visual.UserInterface
 {
-    public class TestSceneTextBox : ManualInputManagerTestScene
+    public partial class TestSceneTextBox : ManualInputManagerTestScene
     {
         private FillFlowContainer textBoxes;
 
@@ -95,7 +95,15 @@ namespace osu.Framework.Tests.Visual.UserInterface
 
                 textBoxes.Add(new CustomTextBox
                 {
-                    Text = @"Custom textbox",
+                    PlaceholderText = "Custom textbox",
+                    Size = new Vector2(500, 30),
+                    TabbableContentContainer = textBoxes
+                });
+
+                textBoxes.Add(new BasicTextBox
+                {
+                    InputProperties = new TextInputProperties(TextInputType.Text, AutoCapitalisation: true),
+                    Text = "Auto-capitalised textbox",
                     Size = new Vector2(500, 30),
                     TabbableContentContainer = textBoxes
                 });
@@ -122,8 +130,9 @@ namespace osu.Framework.Tests.Visual.UserInterface
                     TabbableContentContainer = otherTextBoxes
                 });
 
-                otherTextBoxes.Add(new BasicPasswordTextBox
+                otherTextBoxes.Add(new BasicTextBox
                 {
+                    InputProperties = new TextInputProperties(TextInputType.Password),
                     PlaceholderText = @"Password textbox",
                     Text = "Secret ;)",
                     Size = new Vector2(500, 30),
@@ -169,12 +178,13 @@ namespace osu.Framework.Tests.Visual.UserInterface
         [Test]
         public void TestNumbersOnly()
         {
-            NumberTextBox numbers = null;
+            BasicTextBox numbers = null;
 
             AddStep("add number textbox", () =>
             {
-                textBoxes.Add(numbers = new NumberTextBox
+                textBoxes.Add(numbers = new BasicTextBox
                 {
+                    InputProperties = new TextInputProperties(TextInputType.Number),
                     PlaceholderText = @"Only numbers",
                     Size = new Vector2(500, 30),
                     TabbableContentContainer = textBoxes
@@ -186,10 +196,13 @@ namespace osu.Framework.Tests.Visual.UserInterface
             AddAssert(@"number text only numbers", () => numbers.Text == @"123456");
         }
 
-        [TestCase(true, true)]
-        [TestCase(true, false)]
-        [TestCase(false, false)]
-        public void CommitOnFocusLost(bool commitOnFocusLost, bool changeText)
+        [TestCase(true, true, false)]
+        [TestCase(true, false, false)]
+        [TestCase(false, false, false)]
+        [TestCase(true, true, true)]
+        [TestCase(true, false, true)]
+        [TestCase(false, false, true)]
+        public void CommitOnFocusLost(bool commitOnFocusLost, bool changeText, bool withInitialText)
         {
             InsertableTextBox textBox = null;
 
@@ -203,10 +216,12 @@ namespace osu.Framework.Tests.Visual.UserInterface
 
                 textBoxes.Add(textBox = new InsertableTextBox
                 {
-                    Text = "Default Text",
                     CommitOnFocusLost = commitOnFocusLost,
                     Size = new Vector2(500, 30),
                 });
+
+                if (withInitialText)
+                    textBox.Text = "Default Text";
 
                 textBox.OnCommit += (_, newText) =>
                 {
@@ -766,6 +781,271 @@ namespace osu.Framework.Tests.Visual.UserInterface
             AddAssert("text container moved back", () => textBox.TextContainerBounds.TopLeft.X < PaddedTextBox.LEFT_RIGHT_PADDING);
         }
 
+        [Test]
+        public void TestSetTextSelection()
+        {
+            TextBox textBox = null;
+
+            AddStep("add textbox", () =>
+            {
+                textBoxes.Add(textBox = new BasicTextBox
+                {
+                    Size = new Vector2(300, 40),
+                    Text = "initial text",
+                });
+            });
+
+            AddStep("click on textbox", () =>
+            {
+                InputManager.MoveMouseTo(textBox);
+                InputManager.Click(MouseButton.Left);
+            });
+
+            AddStep("set text", () => textBox.Text = "a longer string of text");
+            // ideally, this should check the caret/selection position, but that is not exposed in TextBox.
+            AddAssert("nothing selected", () => textBox.SelectedText == string.Empty);
+
+            AddStep("select all", () => InputManager.Keys(PlatformAction.SelectAll));
+            AddStep("set text via current", () => textBox.Text = "short text");
+            AddAssert("nothing selected", () => textBox.SelectedText == string.Empty);
+        }
+
+        [Test]
+        public void TestTextChangedDuringDoubleClickDrag()
+        {
+            InsertableTextBox textBox = null;
+
+            AddStep("add textbox", () =>
+            {
+                textBoxes.Add(textBox = new InsertableTextBox
+                {
+                    Size = new Vector2(300, 40),
+                    Text = "initial text",
+                });
+            });
+
+            AddStep("click on textbox", () =>
+            {
+                InputManager.MoveMouseTo(textBox);
+                InputManager.Click(MouseButton.Left);
+            });
+
+            AddStep("set text", () => textBox.Text = "aaaaaaaaaaaaaaaaaaaa");
+
+            AddStep("select word", () =>
+            {
+                InputManager.Click(MouseButton.Left);
+                InputManager.PressButton(MouseButton.Left);
+            });
+
+            AddStep("insert text", () => textBox.InsertString("a"));
+            AddAssert("text overwritten", () => textBox.Text == "a");
+            AddStep("start drag", () => InputManager.MoveMouseTo(textBox, new Vector2(-50, 0)));
+            AddStep("end drag", () => InputManager.ReleaseButton(MouseButton.Left));
+        }
+
+        [Test]
+        public void TestSelectAll()
+        {
+            TextBox textBox = null;
+
+            AddStep("add textbox", () =>
+            {
+                textBoxes.Add(textBox = new BasicTextBox
+                {
+                    Size = new Vector2(300, 40),
+                    Text = "initial text",
+                });
+            });
+
+            AddAssert("select all fails", () => textBox.SelectAll(), () => Is.False);
+            AddAssert("no text selected", () => textBox.SelectedText, () => Is.EqualTo(string.Empty));
+
+            AddStep("click on textbox", () =>
+            {
+                InputManager.MoveMouseTo(textBox);
+                InputManager.Click(MouseButton.Left);
+            });
+
+            AddAssert("select all succeeds", () => textBox.SelectAll(), () => Is.True);
+            AddAssert("all text selected", () => textBox.SelectedText, () => Is.EqualTo(textBox.Text));
+        }
+
+        [Test]
+        public void TestCursorMovementWithSelection()
+        {
+            TextBox textBox = null;
+
+            AddStep("add textbox", () =>
+            {
+                textBoxes.Add(textBox = new BasicTextBox
+                {
+                    Size = new Vector2(300, 40),
+                    Text = "cwm fjord glyphs vext bank quiz",
+                    ReadOnly = false
+                });
+            });
+
+            AddStep("focus textbox", () =>
+            {
+                InputManager.MoveMouseTo(textBox);
+                InputManager.Click(MouseButton.Left);
+            });
+
+            // left char move should put cursor at left end of selection
+            AddStep("select all", () => textBox.SelectAll());
+            AddStep("move cursor backward (char)", () => InputManager.Keys(PlatformAction.MoveBackwardChar));
+            AddStep("select next word", () => InputManager.Keys(PlatformAction.SelectForwardWord));
+            AddAssert("first word selected", () => textBox.SelectedText == "cwm");
+
+            // forward word move should put cursor at right end of selection
+            AddStep("move cursor forward (word)", () => InputManager.Keys(PlatformAction.MoveForwardWord));
+            AddStep("select next word", () => InputManager.Keys(PlatformAction.SelectForwardWord));
+            AddAssert("second word selected", () => textBox.SelectedText == " fjord");
+
+            // same thing but for "back-facing" selection
+            AddStep("move cursor forward (word)", () => InputManager.Keys(PlatformAction.MoveForwardWord));
+            AddStep("select previous word", () => InputManager.Keys(PlatformAction.SelectBackwardWord));
+            AddAssert("second word selected", () => textBox.SelectedText == "fjord");
+
+            // right char move should put cursor at right end of selection
+            AddStep("select all", () => textBox.SelectAll());
+            AddStep("move cursor forward (char)", () => InputManager.Keys(PlatformAction.MoveForwardChar));
+            AddStep("select previous word", () => InputManager.Keys(PlatformAction.SelectBackwardWord));
+            AddAssert("last word selected", () => textBox.SelectedText == "quiz");
+
+            // backward word move should put cursor at left end of selection
+            AddStep("move cursor backward (word)", () => InputManager.Keys(PlatformAction.MoveBackwardWord));
+            AddStep("select previous word", () => InputManager.Keys(PlatformAction.SelectBackwardWord));
+            AddAssert("second-from-last word selected", () => textBox.SelectedText == "bank ");
+
+            // same thing but for "front-facing" selection
+            AddStep("move cursor backward (word)", () => InputManager.Keys(PlatformAction.MoveBackwardWord));
+            AddStep("select next word", () => InputManager.Keys(PlatformAction.SelectForwardWord));
+            AddAssert("second-from-last word selected", () => textBox.SelectedText == "bank");
+        }
+
+        [Test]
+        public void TestTypingCancelsOngoingDragSelection()
+        {
+            InsertableTextBox textBox = null;
+
+            AddStep("add textbox", () =>
+            {
+                textBoxes.Add(textBox = new InsertableTextBox
+                {
+                    Size = new Vector2(300, 40),
+                    Text = "123",
+                    ReadOnly = false
+                });
+            });
+
+            AddStep("focus textbox", () =>
+            {
+                InputManager.MoveMouseTo(textBox);
+                InputManager.Click(MouseButton.Left);
+            });
+
+            // drag text, insert, keep mouse held, drag more and ensure it's ignored
+            AddStep("hold from middle of textbox", () => InputManager.PressButton(MouseButton.Left));
+            AddStep("move mouse to left of textbox", () => InputManager.MoveMouseTo(textBox.ScreenSpaceDrawQuad.TopLeft - new Vector2(20f, 0f)));
+            AddAssert("text selected by drag", () => textBox.SelectedText == "123");
+            AddStep("insert character", () => textBox.InsertString("1"));
+            AddAssert("text overwritten", () => textBox.Text == "1");
+            AddStep("move mouse a little", () => InputManager.MoveMouseTo(InputManager.CurrentState.Mouse.Position - new Vector2(10f, 0f)));
+            AddAssert("text not selected by drag", () => string.IsNullOrEmpty(textBox.SelectedText));
+            AddStep("release mouse", () => InputManager.ReleaseButton(MouseButton.Left));
+
+            // drag text, release mouse, insert, drag again and ensure dragging still works
+            AddStep("hold from middle of textbox", () =>
+            {
+                InputManager.MoveMouseTo(textBox);
+                InputManager.PressButton(MouseButton.Left);
+            });
+            AddStep("drag again", () => InputManager.MoveMouseTo(textBox.ScreenSpaceDrawQuad.TopLeft - new Vector2(20f, 0f)));
+            AddAssert("text selected by drag", () => textBox.SelectedText == "1");
+            AddStep("release mouse", () => InputManager.ReleaseButton(MouseButton.Left));
+            AddStep("insert character", () => textBox.InsertString("1"));
+            AddAssert("text overwritten", () => textBox.Text == "1");
+            AddStep("hold from middle of textbox", () =>
+            {
+                InputManager.MoveMouseTo(textBox);
+                InputManager.PressButton(MouseButton.Left);
+            });
+            AddStep("drag again", () => InputManager.MoveMouseTo(textBox.ScreenSpaceDrawQuad.TopLeft - new Vector2(20f, 0f)));
+            AddAssert("text selected by drag", () => textBox.SelectedText == "1");
+        }
+
+        [Test]
+        public void TestTabbing()
+        {
+            AddStep("add textboxes", () =>
+            {
+                textBoxes.AddRange([
+                    new InsertableTextBox
+                    {
+                        Size = new Vector2(300, 40),
+                        Text = "first!",
+                        ReadOnly = false,
+                        TabbableContentContainer = textBoxes,
+                    },
+                    new InsertableTextBox
+                    {
+                        Size = new Vector2(300, 40),
+                        Text = "second!",
+                        ReadOnly = false,
+                        TabbableContentContainer = textBoxes,
+                    },
+                    new InsertableTextBox
+                    {
+                        Size = new Vector2(300, 40),
+                        Text = "third! (readonly)",
+                        ReadOnly = true,
+                        TabbableContentContainer = textBoxes,
+                    },
+                    new InsertableTextBox
+                    {
+                        Size = new Vector2(300, 40),
+                        Text = "fourth!",
+                        ReadOnly = false,
+                        TabbableContentContainer = textBoxes,
+                    }
+                ]);
+            });
+
+            AddStep("focus first textbox", () =>
+            {
+                InputManager.MoveMouseTo(textBoxes[0]);
+                InputManager.Click(MouseButton.Left);
+            });
+
+            AddStep("press tab", () => InputManager.Key(Key.Tab));
+            AddAssert("second textbox focused", () => textBoxes[1].HasFocus);
+
+            AddStep("press tab", () => InputManager.Key(Key.Tab));
+            AddAssert("readonly textbox skipped", () => textBoxes[3].HasFocus);
+
+            AddStep("press tab", () => InputManager.Key(Key.Tab));
+            AddAssert("first textbox focused", () => textBoxes[0].HasFocus);
+
+            AddStep("press shift-tab", () =>
+            {
+                InputManager.PressKey(Key.ShiftLeft);
+                InputManager.Key(Key.Tab);
+                InputManager.ReleaseKey(Key.ShiftLeft);
+            });
+            AddAssert("fourth textbox focused", () => textBoxes[3].HasFocus);
+
+            AddStep("hide second textbox", () => textBoxes[1].Alpha = 0);
+            AddStep("press shift-tab", () =>
+            {
+                InputManager.PressKey(Key.ShiftLeft);
+                InputManager.Key(Key.Tab);
+                InputManager.ReleaseKey(Key.ShiftLeft);
+            });
+            AddAssert("first textbox focused", () => textBoxes[0].HasFocus);
+        }
+
         private void prependString(InsertableTextBox textBox, string text)
         {
             InputManager.Keys(PlatformAction.MoveBackwardLine);
@@ -796,7 +1076,7 @@ namespace osu.Framework.Tests.Visual.UserInterface
                 InputManager.Keys(PlatformAction.DeleteBackwardChar);
         }
 
-        public class InsertableTextBox : BasicTextBox
+        public partial class InsertableTextBox : BasicTextBox
         {
             /// <summary>
             /// Returns the shown-in-screen text.
@@ -806,18 +1086,11 @@ namespace osu.Framework.Tests.Visual.UserInterface
             public new void InsertString(string text) => base.InsertString(text);
         }
 
-        private class NumberTextBox : BasicTextBox
+        private partial class CustomTextBox : BasicTextBox
         {
-            protected override bool CanAddCharacter(char character) => character.IsAsciiDigit();
+            protected override Drawable GetDrawableCharacter(char c) => new ScalingText(c, FontSize);
 
-            protected override bool AllowIme => false;
-        }
-
-        private class CustomTextBox : BasicTextBox
-        {
-            protected override Drawable GetDrawableCharacter(char c) => new ScalingText(c, CalculatedTextSize);
-
-            private class ScalingText : CompositeDrawable
+            private partial class ScalingText : CompositeDrawable
             {
                 private readonly SpriteText text;
 
@@ -854,22 +1127,25 @@ namespace osu.Framework.Tests.Visual.UserInterface
 
             protected override Caret CreateCaret() => new BorderCaret();
 
-            private class BorderCaret : Caret
+            private partial class BorderCaret : Caret
             {
                 private const float caret_width = 2;
 
                 public BorderCaret()
                 {
-                    RelativeSizeAxes = Axes.Y;
-
-                    Masking = true;
-                    BorderColour = Color4.White;
-                    BorderThickness = 3;
-
-                    InternalChild = new Box
+                    InternalChild = new Container
                     {
+                        Anchor = Anchor.CentreLeft,
+                        Origin = Anchor.CentreLeft,
                         RelativeSizeAxes = Axes.Both,
-                        Colour = Color4.Transparent
+                        Masking = true,
+                        BorderColour = Colour4.White,
+                        BorderThickness = 3f,
+                        Child = new Box
+                        {
+                            RelativeSizeAxes = Axes.Both,
+                            Colour = Colour4.Transparent,
+                        },
                     };
                 }
 
@@ -881,7 +1157,7 @@ namespace osu.Framework.Tests.Visual.UserInterface
             }
         }
 
-        private class PaddedTextBox : BasicTextBox
+        private partial class PaddedTextBox : BasicTextBox
         {
             public const float LEFT_RIGHT_PADDING = 50;
 

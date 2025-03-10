@@ -1,6 +1,8 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -17,9 +19,13 @@ namespace osu.Framework.Graphics.UserInterface
     /// <summary>
     /// A component which allows a user to select a directory.
     /// </summary>
-    public abstract class DirectorySelector : CompositeDrawable
+    public abstract partial class DirectorySelector : CompositeDrawable
     {
         private FillFlowContainer directoryFlow;
+
+        protected Container<Drawable> Content { get; private set; } = null!;
+
+        protected readonly BindableBool ShowHiddenItems = new BindableBool();
 
         protected abstract ScrollContainer<Drawable> CreateScrollContainer();
 
@@ -27,6 +33,14 @@ namespace osu.Framework.Graphics.UserInterface
         /// Create the breadcrumb part of the control.
         /// </summary>
         protected abstract DirectorySelectorBreadcrumbDisplay CreateBreadcrumb();
+
+        /// <summary>
+        /// Create a button that toggles the display of hidden items.
+        /// </summary>
+        /// <remarks>
+        /// Unless overridden, a toggle button will not be added.
+        /// </remarks>
+        protected virtual Drawable CreateHiddenToggleButton() => Empty();
 
         protected abstract DirectorySelectorDirectory CreateDirectoryItem(DirectoryInfo directory, string displayName = null);
 
@@ -39,6 +53,8 @@ namespace osu.Framework.Graphics.UserInterface
         public readonly Bindable<DirectoryInfo> CurrentPath = new Bindable<DirectoryInfo>();
 
         private string initialPath;
+
+        protected Container TopLevelContent { get; private set; }
 
         protected DirectorySelector(string initialPath = null)
         {
@@ -57,38 +73,65 @@ namespace osu.Framework.Graphics.UserInterface
         {
             initialPath ??= gameHost.InitialFileSelectorPath;
 
-            InternalChild = new GridContainer
+            InternalChild = TopLevelContent = new Container
             {
                 RelativeSizeAxes = Axes.Both,
-                RowDimensions = new[]
+                Child = Content = new Container
                 {
-                    new Dimension(GridSizeMode.AutoSize),
-                    new Dimension(),
-                },
-                Content = new[]
-                {
-                    new Drawable[]
+                    RelativeSizeAxes = Axes.Both,
+                    Child = new GridContainer
                     {
-                        CreateBreadcrumb()
-                    },
-                    new Drawable[]
-                    {
-                        CreateScrollContainer().With(d =>
+                        RelativeSizeAxes = Axes.Both,
+                        RowDimensions = new[]
                         {
-                            d.RelativeSizeAxes = Axes.Both;
-                            d.Child = directoryFlow = new FillFlowContainer
+                            new Dimension(GridSizeMode.AutoSize),
+                            new Dimension(),
+                        },
+                        Content = new[]
+                        {
+                            new Drawable[]
                             {
-                                AutoSizeAxes = Axes.Y,
-                                RelativeSizeAxes = Axes.X,
-                                Direction = FillDirection.Vertical,
-                                Spacing = new Vector2(2),
-                            };
-                        })
+                                new GridContainer
+                                {
+                                    RelativeSizeAxes = Axes.X,
+                                    AutoSizeAxes = Axes.Y,
+                                    ColumnDimensions = new[]
+                                    {
+                                        new Dimension(),
+                                        new Dimension(GridSizeMode.AutoSize),
+                                    },
+                                    RowDimensions = new[] { new Dimension(GridSizeMode.AutoSize) },
+                                    Content = new[]
+                                    {
+                                        new[]
+                                        {
+                                            CreateBreadcrumb(),
+                                            CreateHiddenToggleButton()
+                                        }
+                                    }
+                                }
+                            },
+                            new Drawable[]
+                            {
+                                CreateScrollContainer().With(d =>
+                                {
+                                    d.RelativeSizeAxes = Axes.Both;
+                                    d.Child = directoryFlow = new FillFlowContainer
+                                    {
+                                        AutoSizeAxes = Axes.Y,
+                                        RelativeSizeAxes = Axes.X,
+                                        Direction = FillDirection.Vertical,
+                                        Spacing = new Vector2(2),
+                                    };
+                                })
+                            }
+                        }
                     }
                 }
             };
 
-            CurrentPath.BindValueChanged(updateDisplay, true);
+            ShowHiddenItems.ValueChanged += _ => updateDisplay();
+            CurrentPath.BindValueChanged(_ => updateDisplay(), true);
         }
 
         /// <summary>
@@ -98,7 +141,7 @@ namespace osu.Framework.Graphics.UserInterface
         /// </summary>
         private bool directoryChanging;
 
-        private void updateDisplay(ValueChangedEvent<DirectoryInfo> directory)
+        private void updateDisplay()
         {
             if (directoryChanging)
                 return;
@@ -107,9 +150,7 @@ namespace osu.Framework.Graphics.UserInterface
             {
                 directoryChanging = true;
 
-                directoryFlow.Clear();
-
-                var newDirectory = directory.NewValue;
+                var newDirectory = CurrentPath.Value;
                 bool notifyError = false;
                 ICollection<DirectorySelectorItem> items = Array.Empty<DirectorySelectorItem>();
 
@@ -129,16 +170,27 @@ namespace osu.Framework.Graphics.UserInterface
 
                 if (newDirectory == null)
                 {
-                    var drives = DriveInfo.GetDrives();
+                    try
+                    {
+                        // This will throw on AOT platforms (System.ExecutionEngineException: Attempting to JIT compile method).
+                        var drives = DriveInfo.GetDrives();
 
-                    foreach (var drive in drives)
-                        directoryFlow.Add(CreateDirectoryItem(drive.RootDirectory));
+                        directoryFlow.Clear();
+
+                        foreach (var drive in drives)
+                            directoryFlow.Add(CreateDirectoryItem(drive.RootDirectory));
+                    }
+                    catch
+                    {
+                        NotifySelectionError();
+                    }
 
                     return;
                 }
 
                 CurrentPath.Value = newDirectory;
 
+                directoryFlow.Clear();
                 directoryFlow.Add(CreateParentDirectoryItem(newDirectory.Parent));
                 directoryFlow.AddRange(items);
             }
@@ -166,7 +218,7 @@ namespace osu.Framework.Graphics.UserInterface
             {
                 foreach (var dir in path.GetDirectories().OrderBy(d => d.Name))
                 {
-                    if (!dir.Attributes.HasFlagFast(FileAttributes.Hidden))
+                    if (ShowHiddenItems.Value || !dir.Attributes.HasFlagFast(FileAttributes.Hidden))
                         items.Add(CreateDirectoryItem(dir));
                 }
 

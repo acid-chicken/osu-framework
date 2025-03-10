@@ -1,9 +1,10 @@
 ﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using System;
 using System.Diagnostics.CodeAnalysis;
-using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using osu.Framework.Allocation;
@@ -11,12 +12,11 @@ using osu.Framework.Development;
 using osu.Framework.Extensions;
 using osu.Framework.Platform;
 using osu.Framework.Testing;
-using osu.Framework.Tests.IO;
 
 namespace osu.Framework.Tests.Platform
 {
     [TestFixture]
-    public class HeadlessGameHostTest
+    public partial class HeadlessGameHostTest
     {
         [Test]
         public void TestGameHostExceptionDuringSetupHost()
@@ -84,45 +84,6 @@ namespace osu.Framework.Tests.Platform
             }
         }
 
-        [Test]
-        public void TestIpc()
-        {
-            using (var server = new BackgroundGameHeadlessGameHost(@"server", new HostOptions { BindIPC = true }))
-            using (var client = new HeadlessGameHost(@"client", new HostOptions { BindIPC = true }))
-            {
-                Assert.IsTrue(server.IsPrimaryInstance, @"Server wasn't able to bind");
-                Assert.IsFalse(client.IsPrimaryInstance, @"Client was able to bind when it shouldn't have been able to");
-
-                var serverChannel = new IpcChannel<Foobar>(server);
-                var clientChannel = new IpcChannel<Foobar>(client);
-
-                async void waitAction()
-                {
-                    using (var received = new ManualResetEventSlim(false))
-                    {
-                        serverChannel.MessageReceived += message =>
-                        {
-                            Assert.AreEqual("example", message.Bar);
-                            // ReSharper disable once AccessToDisposedClosure
-                            received.Set();
-                            return null;
-                        };
-
-                        await clientChannel.SendMessageAsync(new Foobar { Bar = "example" }).ConfigureAwait(false);
-
-                        received.Wait();
-                    }
-                }
-
-                Assert.IsTrue(Task.Run(waitAction).Wait(10000), @"Message was not received in a timely fashion");
-            }
-        }
-
-        private class Foobar
-        {
-            public string Bar;
-        }
-
         public class ExceptionDuringSetupGameHost : TestRunHeadlessGameHost
         {
             public ExceptionDuringSetupGameHost(string gameName)
@@ -150,7 +111,7 @@ namespace osu.Framework.Tests.Platform
             }
         }
 
-        internal class ExceptionDuringAsynchronousLoadTestGame : TestGame
+        internal partial class ExceptionDuringAsynchronousLoadTestGame : TestGame
         {
             [BackgroundDependencyLoader]
             private void load()

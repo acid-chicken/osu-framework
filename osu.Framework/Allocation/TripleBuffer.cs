@@ -2,6 +2,7 @@
 // See the LICENCE file in the repository root for full licence text.
 
 using System;
+using System.Diagnostics;
 using System.Threading;
 
 namespace osu.Framework.Allocation
@@ -9,87 +10,107 @@ namespace osu.Framework.Allocation
     /// <summary>
     /// Handles triple-buffering of any object type.
     /// Thread safety assumes at most one writer and one reader.
+    /// Comes with the added assurance that the most recent <see cref="GetForRead"/> object is not written to.
     /// </summary>
-    public class TripleBuffer<T>
+    internal class TripleBuffer<T>
         where T : class
     {
-        private readonly ObjectUsage<T>[] buffers = new ObjectUsage<T>[3];
+        /// <summary>
+        /// The default amount of time (in milliseconds) to wait for a write to occur during <see cref="GetForRead"/>.
+        /// </summary>
+        public const int DEFAULT_READ_TIMEOUT = 100;
 
-        private int read;
-        private int write;
-        private int lastWrite = -1;
+        private const int buffer_count = 3;
 
-        private long currentFrame;
+        private readonly Buffer[] buffers = new Buffer[buffer_count];
+        private readonly Stopwatch stopwatch = new Stopwatch();
 
-        private readonly Action<ObjectUsage<T>, UsageType> finishDelegate;
+        private int writeIndex;
+        private int flipIndex = 1;
+        private int readIndex = 2;
 
         public TripleBuffer()
         {
-            //caching the delegate means we only have to allocate it once, rather than once per created buffer.
-            finishDelegate = finish;
+            for (int i = 0; i < buffer_count; i++)
+                buffers[i] = new Buffer(i, finishUsage);
         }
 
-        public ObjectUsage<T> Get(UsageType usage)
+        /// <summary>
+        /// Retrieves a buffer to be written to.
+        /// </summary>
+        /// <returns>The buffer.</returns>
+        public Buffer GetForWrite()
         {
-            switch (usage)
-            {
-                case UsageType.Write:
-                    lock (buffers)
-                    {
-                        while (buffers[write]?.Usage == UsageType.Read || write == lastWrite)
-                            write = (write + 1) % 3;
-                    }
-
-                    if (buffers[write] == null)
-                    {
-                        buffers[write] = new ObjectUsage<T>
-                        {
-                            Finish = finishDelegate,
-                            Usage = UsageType.Write,
-                            Index = write,
-                        };
-                    }
-                    else
-                    {
-                        buffers[write].Usage = UsageType.Write;
-                    }
-
-                    buffers[write].FrameId = Interlocked.Increment(ref currentFrame);
-                    return buffers[write];
-
-                case UsageType.Read:
-                    if (lastWrite < 0) return null;
-
-                    lock (buffers)
-                    {
-                        read = lastWrite;
-                        buffers[read].Usage = UsageType.Read;
-                    }
-
-                    return buffers[read];
-            }
-
-            return null;
+            Buffer usage = buffers[writeIndex];
+            usage.LastUsage = UsageType.Write;
+            return usage;
         }
 
-        private void finish(ObjectUsage<T> obj, UsageType type)
+        /// <summary>
+        /// Attempts to retrieve a buffer to read.
+        /// </summary>
+        /// <param name="timeout">Amount of time (in milliseconds) to wait for a buffer to be written.</param>
+        /// <returns>An available buffer to be read, or <c>null</c> if no buffer has been written.</returns>
+        public Buffer? GetForRead(int timeout = DEFAULT_READ_TIMEOUT)
         {
-            switch (type)
+            stopwatch.Restart();
+
+            while (true)
             {
-                case UsageType.Read:
-                    lock (buffers)
-                        buffers[read].Usage = UsageType.None;
+                flip(ref readIndex);
+
+                if (buffers[readIndex].LastUsage != UsageType.Read)
                     break;
 
-                case UsageType.Write:
-                    lock (buffers)
-                    {
-                        buffers[write].Usage = UsageType.None;
-                        lastWrite = write;
-                    }
-
-                    break;
+                if (timeout == 0 || stopwatch.ElapsedMilliseconds > timeout)
+                    return null;
             }
+
+            Buffer usage = buffers[readIndex];
+
+            Debug.Assert(usage.LastUsage == UsageType.Write);
+            usage.LastUsage = UsageType.Read;
+
+            return usage;
+        }
+
+        private void finishUsage(Buffer usage)
+        {
+            if (usage.LastUsage == UsageType.Write)
+                flip(ref writeIndex);
+        }
+
+        private void flip(ref int localIndex)
+        {
+            localIndex = Interlocked.Exchange(ref flipIndex, localIndex);
+        }
+
+        public class Buffer : IDisposable
+        {
+            public T? Object;
+
+            public volatile UsageType LastUsage;
+
+            public readonly int Index;
+
+            private readonly Action<Buffer>? finish;
+
+            public Buffer(int index, Action<Buffer>? finish)
+            {
+                Index = index;
+                this.finish = finish;
+            }
+
+            public void Dispose()
+            {
+                finish?.Invoke(this);
+            }
+        }
+
+        public enum UsageType
+        {
+            Read,
+            Write
         }
     }
 }

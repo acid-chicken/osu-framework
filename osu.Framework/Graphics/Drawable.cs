@@ -1,6 +1,8 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using osuTK;
 using osuTK.Graphics;
 using osu.Framework.Allocation;
@@ -20,6 +22,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
@@ -27,13 +30,10 @@ using JetBrains.Annotations;
 using osu.Framework.Bindables;
 using osu.Framework.Development;
 using osu.Framework.Extensions.EnumExtensions;
-using osu.Framework.Graphics.Cursor;
-using osu.Framework.Graphics.OpenGL;
-using osu.Framework.Input.Bindings;
+using osu.Framework.Graphics.Rendering;
 using osu.Framework.Input.Events;
 using osu.Framework.Input.States;
 using osu.Framework.Layout;
-using osu.Framework.Testing;
 using osu.Framework.Utils;
 using osuTK.Input;
 using Container = osu.Framework.Graphics.Containers.Container;
@@ -52,10 +52,12 @@ namespace osu.Framework.Graphics
     /// Drawables are always rectangular in shape in their local coordinate system,
     /// which makes them quad-shaped in arbitrary (linearly transformed) coordinate systems.
     /// </summary>
-    [ExcludeFromDynamicCompile]
     public abstract partial class Drawable : Transformable, IDisposable, IDrawable
     {
         #region Construction and disposal
+
+        [Resolved(CanBeNull = true)]
+        private IRenderer renderer { get; set; }
 
         protected Drawable()
         {
@@ -66,11 +68,10 @@ namespace osu.Framework.Graphics
             AddLayout(screenSpaceDrawQuadBacking);
             AddLayout(drawColourInfoBacking);
             AddLayout(requiredParentSizeToFitBacking);
+            AddLayout(maskingBacking);
         }
 
         private static readonly GlobalStatistic<int> total_count = GlobalStatistics.Get<int>(nameof(Drawable), "Total constructed");
-
-        internal bool IsLongRunning => GetType().GetCustomAttribute<LongRunningLoadAttribute>() != null;
 
         /// <summary>
         /// Disposes this drawable.
@@ -105,8 +106,11 @@ namespace osu.Framework.Graphics
             OnDispose?.Invoke();
             OnDispose = null;
 
-            for (int i = 0; i < drawNodes.Length; i++)
-                drawNodes[i]?.Dispose();
+            renderer?.ScheduleDisposal(d =>
+            {
+                for (int i = 0; i < d.drawNodes.Length; i++)
+                    d.drawNodes[i]?.Dispose();
+            }, this);
 
             IsDisposed = true;
         }
@@ -124,26 +128,29 @@ namespace osu.Framework.Graphics
         /// </summary>
         internal virtual void UnbindAllBindablesSubTree() => UnbindAllBindables();
 
-        private void cacheUnbindActions()
+        private Action<object> getUnbindAction()
         {
-            foreach (var type in GetType().EnumerateBaseTypes())
+            Type ourType = GetType();
+            return unbind_action_cache.TryGetValue(ourType, out var action) ? action : cacheUnbindAction(ourType);
+
+            // Extracted to a separate method to prevent .NET from pre-allocating some objects (saves ~150B per call to this method, even if already cached).
+            static Action<object> cacheUnbindAction(Type ourType)
             {
-                if (unbind_action_cache.TryGetValue(type, out _))
-                    return;
+                List<Action<object>> actions = new List<Action<object>>();
 
-                // List containing all the delegates to perform the unbinds
-                var actions = new List<Action<object>>();
-
-                // Generate delegates to unbind fields
-                actions.AddRange(type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)
-                                     .Where(f => typeof(IUnbindable).IsAssignableFrom(f.FieldType))
-                                     .Select(f => new Action<object>(target => ((IUnbindable)f.GetValue(target))?.UnbindAll())));
+                foreach (var type in ourType.EnumerateBaseTypes())
+                {
+                    // Generate delegates to unbind fields
+                    actions.AddRange(type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                                         .Where(f => typeof(IUnbindable).IsAssignableFrom(f.FieldType))
+                                         .Select(f => new Action<object>(target => ((IUnbindable)f.GetValue(target))?.UnbindAll())));
+                }
 
                 // Delegates to unbind properties are intentionally not generated.
                 // Properties with backing fields (including automatic properties) will be picked up by the field unbind delegate generation,
                 // while ones without backing fields (like get-only properties that delegate to another drawable's bindable) should not be unbound here.
 
-                unbind_action_cache[type] = target =>
+                return unbind_action_cache[ourType] = target =>
                 {
                     foreach (var a in actions)
                     {
@@ -153,7 +160,7 @@ namespace osu.Framework.Graphics
                         }
                         catch (Exception e)
                         {
-                            Logger.Error(e, $"Failed to unbind a local bindable in {type.ReadableName()}");
+                            Logger.Error(e, $"Failed to unbind a local bindable in {ourType.ReadableName()}");
                         }
                     }
                 };
@@ -172,11 +179,7 @@ namespace osu.Framework.Graphics
 
             unbindComplete = true;
 
-            foreach (var type in GetType().EnumerateBaseTypes())
-            {
-                if (unbind_action_cache.TryGetValue(type, out var existing))
-                    existing?.Invoke(this);
-            }
+            getUnbindAction().Invoke(this);
 
             OnUnbindAllBindables?.Invoke();
         }
@@ -238,10 +241,12 @@ namespace osu.Framework.Graphics
             lock (LoadLock)
             {
                 if (!isDirectAsyncContext && IsLongRunning)
-                    throw new InvalidOperationException("Tried to load a long-running drawable in a non-direct async context. See https://git.io/Je1YF for more details.");
+                {
+                    throw new InvalidOperationException(
+                        $"Tried to load long-running drawable type {GetType().ReadableName()} in a non-direct async context. See https://git.io/Je1YF for more details.");
+                }
 
-                if (IsDisposed)
-                    throw new ObjectDisposedException(ToString(), "Attempting to load an already disposed drawable.");
+                ObjectDisposedException.ThrowIf(IsDisposed, this);
 
                 if (loadState == LoadState.NotLoaded)
                 {
@@ -260,6 +265,9 @@ namespace osu.Framework.Graphics
         {
             LoadThread = Thread.CurrentThread;
 
+            // Cache eagerly during load to hopefully defer the reflection overhead to an async pathway.
+            getUnbindAction();
+
             UpdateClock(clock);
 
             double timeBefore = DebugUtils.LogPerformanceIssues ? perf_clock.CurrentTime : 0;
@@ -271,8 +279,6 @@ namespace osu.Framework.Graphics
             RequestsPositionalInputSubTree = RequestsPositionalInput;
 
             InjectDependencies(dependencies);
-
-            cacheUnbindActions();
 
             LoadAsyncComplete();
 
@@ -413,7 +419,7 @@ namespace osu.Framework.Graphics
         /// <summary>.
         /// Fired after the <see cref="Invalidate"/> method is called.
         /// </summary>
-        internal event Action<Drawable> Invalidated;
+        internal event Action<Drawable, Invalidation> Invalidated;
 
         /// <summary>
         /// Fired after the <see cref="Dispose(bool)"/> method is called.
@@ -430,7 +436,7 @@ namespace osu.Framework.Graphics
         /// </summary>
         private static readonly object scheduler_acquisition_lock = new object();
 
-        private Scheduler scheduler;
+        private volatile Scheduler scheduler;
 
         /// <summary>
         /// A lazily-initialized scheduler used to schedule tasks to be invoked in future <see cref="Update"/>s calls.
@@ -444,7 +450,14 @@ namespace osu.Framework.Graphics
                     return scheduler;
 
                 lock (scheduler_acquisition_lock)
-                    return scheduler ??= new Scheduler(() => ThreadSafety.IsUpdateThread, Clock);
+                {
+                    if (scheduler != null)
+                        return scheduler;
+
+                    scheduler = new Scheduler(() => ThreadSafety.IsUpdateThread, Clock);
+                }
+
+                return scheduler;
             }
         }
 
@@ -455,8 +468,7 @@ namespace osu.Framework.Graphics
         /// <returns>False if the drawable should not be updated.</returns>
         public virtual bool UpdateSubTree()
         {
-            if (IsDisposed)
-                throw new ObjectDisposedException(ToString(), "Disposed Drawables may never be in the scene graph.");
+            ObjectDisposedException.ThrowIf(IsDisposed, this);
 
             if (ProcessCustomClock)
                 customClock?.ProcessFrame();
@@ -486,21 +498,40 @@ namespace osu.Framework.Graphics
         }
 
         /// <summary>
+        /// Computes the masking bounds of this <see cref="Drawable"/>.
+        /// </summary>
+        /// <returns>The <see cref="RectangleF"/> that defines the masking bounds.</returns>
+        public virtual RectangleF ComputeMaskingBounds()
+        {
+            if (HasProxy)
+                return proxy.ComputeMaskingBounds();
+
+            if (parent == null)
+                return ScreenSpaceDrawQuad.AABBFloat;
+
+            return parent.ChildMaskingBounds;
+        }
+
+        private RectangleF? lastMaskingBounds;
+
+        /// <summary>
         /// Updates all masking calculations for this <see cref="Drawable"/>.
         /// This occurs post-<see cref="UpdateSubTree"/> to ensure that all <see cref="Drawable"/> updates have taken place.
         /// </summary>
-        /// <param name="source">The parent that triggered this update on this <see cref="Drawable"/>.</param>
-        /// <param name="maskingBounds">The <see cref="RectangleF"/> that defines the masking bounds.</param>
         /// <returns>Whether masking calculations have taken place.</returns>
-        public virtual bool UpdateSubTreeMasking(Drawable source, RectangleF maskingBounds)
+        public virtual bool UpdateSubTreeMasking()
         {
             if (!IsPresent)
                 return false;
 
-            if (HasProxy && source != proxy)
-                return false;
+            var maskingBounds = ComputeMaskingBounds();
 
-            IsMaskedAway = ComputeIsMaskedAway(maskingBounds);
+            if (!maskingBacking.IsValid || lastMaskingBounds != maskingBounds)
+            {
+                lastMaskingBounds = maskingBounds;
+                IsMaskedAway = maskingBacking.Value = ComputeIsMaskedAway(maskingBounds);
+            }
+
             return true;
         }
 
@@ -962,11 +993,6 @@ namespace osu.Framework.Graphics
             get => scale;
             set
             {
-                if (Math.Abs(value.X) < Precision.FLOAT_EPSILON)
-                    value.X = Precision.FLOAT_EPSILON;
-                if (Math.Abs(value.Y) < Precision.FLOAT_EPSILON)
-                    value.Y = Precision.FLOAT_EPSILON;
-
                 if (scale == value)
                     return;
 
@@ -1082,7 +1108,7 @@ namespace osu.Framework.Graphics
         /// <summary>
         /// The origin of this <see cref="Drawable"/>.
         /// </summary>
-        /// <exception cref="ArgumentException">If the provided value does not exist in the <see cref="osu.Framework.Graphics.Anchor"/> enumeration.</exception>
+        /// <exception cref="ArgumentException">If the provided value does not exist in the <see cref="Graphics.Anchor"/> enumeration.</exception>
         public virtual Anchor Origin
         {
             get => origin;
@@ -1313,7 +1339,7 @@ namespace osu.Framework.Graphics
         /// Determines whether this Drawable is present based on its <see cref="Alpha"/> value.
         /// Can be forced always on with <see cref="AlwaysPresent"/>.
         /// </summary>
-        public virtual bool IsPresent => AlwaysPresent || Alpha > visibility_cutoff && Math.Abs(Scale.X) > Precision.FLOAT_EPSILON && Math.Abs(Scale.Y) > Precision.FLOAT_EPSILON;
+        public virtual bool IsPresent => AlwaysPresent || (Alpha > visibility_cutoff && DrawScale.X != 0 && DrawScale.Y != 0);
 
         private bool alwaysPresent;
 
@@ -1466,7 +1492,16 @@ namespace osu.Framework.Graphics
         /// As this is performing an upward tree traversal, avoid calling every frame.
         /// </summary>
         /// <returns>The first parent <see cref="InputManager"/>.</returns>
-        protected InputManager GetContainingInputManager() => FindClosestParent<InputManager>();
+        [CanBeNull]
+        protected internal InputManager GetContainingInputManager() => this.FindClosestParent<InputManager>();
+
+        /// <summary>
+        /// Retrieve the first parent in the tree which implements <see cref="IFocusManager"/>.
+        /// As this is performing an upward tree traversal, avoid calling every frame.
+        /// </summary>
+        /// <returns>The first parent <see cref="IFocusManager"/>.</returns>
+        [CanBeNull]
+        protected internal IFocusManager GetContainingFocusManager() => this.FindClosestParent<IFocusManager>();
 
         private CompositeDrawable parent;
 
@@ -1478,8 +1513,7 @@ namespace osu.Framework.Graphics
             get => parent;
             internal set
             {
-                if (IsDisposed)
-                    throw new ObjectDisposedException(ToString(), "Disposed Drawables may never get a parent and return to the scene graph.");
+                ObjectDisposedException.ThrowIf(IsDisposed, this);
 
                 if (value == null)
                     ChildID = 0;
@@ -1503,27 +1537,6 @@ namespace osu.Framework.Graphics
         }
 
         /// <summary>
-        /// Find the closest parent of a specified type.
-        /// </summary>
-        /// <remarks>
-        /// This can be a potentially expensive operation and should be used with discretion.
-        /// </remarks>
-        /// <typeparam name="T">The type to match.</typeparam>
-        /// <returns>The first matching parent, or null if no parent of type <typeparamref name="T"/> is found.</returns>
-        internal T FindClosestParent<T>() where T : class, IDrawable
-        {
-            Drawable cursor = this;
-
-            while ((cursor = cursor.Parent) != null)
-            {
-                if (cursor is T match)
-                    return match;
-            }
-
-            return default;
-        }
-
-        /// <summary>
         /// Refers to the original if this drawable was created via
         /// <see cref="CreateProxy"/>. Otherwise refers to this.
         /// </summary>
@@ -1535,7 +1548,7 @@ namespace osu.Framework.Graphics
         public bool HasProxy => proxy != null;
 
         /// <summary>
-        /// True iff this <see cref="Drawable"/> is not a proxy of any <see cref="Drawable"/>.
+        /// True iff this <see cref="Drawable"/> is a proxy of any <see cref="Drawable"/>.
         /// </summary>
         public bool IsProxy => Original != this;
 
@@ -1573,6 +1586,8 @@ namespace osu.Framework.Graphics
         /// actually masked away, but it may be false, even if the Drawable was masked away.
         /// </summary>
         internal bool IsMaskedAway { get; private set; }
+
+        private readonly LayoutValue<bool> maskingBacking = new LayoutValue<bool>(Invalidation.DrawInfo | Invalidation.RequiredParentSizeToFit | Invalidation.Presence);
 
         private readonly LayoutValue<Quad> screenSpaceDrawQuadBacking = new LayoutValue<Quad>(Invalidation.DrawInfo | Invalidation.RequiredParentSizeToFit | Invalidation.Presence);
 
@@ -1709,7 +1724,11 @@ namespace osu.Framework.Graphics
         /// </summary>
         private InvalidationList invalidationList = new InvalidationList(Invalidation.All);
 
-        private readonly List<LayoutMember> layoutMembers = new List<LayoutMember>();
+        /// <summary>
+        /// Represents the most-recently added <see cref="LayoutMember"/> (via <see cref="AddLayout"/>).
+        /// It is also used as a linked-list during invalidation by traversing through <see cref="LayoutMember.Next"/>.
+        /// </summary>
+        private LayoutMember layoutList;
 
         /// <summary>
         /// Adds a layout member that will be invalidated when its <see cref="LayoutMember.Invalidation"/> is invalidated.
@@ -1720,7 +1739,14 @@ namespace osu.Framework.Graphics
             if (LoadState > LoadState.NotLoaded)
                 throw new InvalidOperationException($"{nameof(LayoutMember)}s cannot be added after {nameof(Drawable)}s have started loading. Consider adding in the constructor.");
 
-            layoutMembers.Add(member);
+            if (layoutList == null)
+                layoutList = member;
+            else
+            {
+                member.Next = layoutList;
+                layoutList = member;
+            }
+
             member.Parent = this;
         }
 
@@ -1785,21 +1811,24 @@ namespace osu.Framework.Graphics
             bool anyInvalidated = (invalidation & Invalidation.DrawNode) > 0;
 
             // Invalidate all layout members
-            for (int i = 0; i < layoutMembers.Count; i++)
-            {
-                var member = layoutMembers[i];
+            LayoutMember nextLayout = layoutList;
 
+            while (nextLayout != null)
+            {
                 // Only invalidate layout members that accept the given source.
-                if ((member.Source & source) == 0)
-                    continue;
+                if ((nextLayout.Source & source) == 0)
+                    goto NextLayoutIteration;
 
                 // Remove invalidation flags that don't refer to the layout member.
-                Invalidation memberInvalidation = invalidation & member.Invalidation;
+                Invalidation memberInvalidation = invalidation & nextLayout.Invalidation;
                 if (memberInvalidation == 0)
-                    continue;
+                    goto NextLayoutIteration;
 
-                if (member.Conditions?.Invoke(this, memberInvalidation) != false)
-                    anyInvalidated |= member.Invalidate();
+                if (nextLayout.Conditions?.Invoke(this, memberInvalidation) != false)
+                    anyInvalidated |= nextLayout.Invalidate();
+
+                NextLayoutIteration:
+                nextLayout = nextLayout.Next;
             }
 
             // Allow any custom invalidation to take place.
@@ -1808,7 +1837,7 @@ namespace osu.Framework.Graphics
             if (anyInvalidated)
                 InvalidationID++;
 
-            Invalidated?.Invoke(this);
+            Invalidated?.Invoke(this, invalidation);
 
             return anyInvalidated;
         }
@@ -1859,7 +1888,7 @@ namespace osu.Framework.Graphics
 
         #region DrawNode
 
-        private readonly DrawNode[] drawNodes = new DrawNode[GLWrapper.MAX_DRAW_NODES];
+        private readonly DrawNode[] drawNodes = new DrawNode[IRenderer.MAX_DRAW_NODES];
 
         /// <summary>
         /// Generates the <see cref="DrawNode"/> for ourselves.
@@ -1905,6 +1934,8 @@ namespace osu.Framework.Graphics
         /// <returns>The vector in other's coordinates.</returns>
         public Vector2 ToSpaceOfOtherDrawable(Vector2 input, IDrawable other)
         {
+            ArgumentNullException.ThrowIfNull(other);
+
             if (other == this)
                 return input;
 
@@ -1930,14 +1961,14 @@ namespace osu.Framework.Graphics
         /// </summary>
         /// <param name="input">A vector in local coordinates.</param>
         /// <returns>The vector in Parent's coordinates.</returns>
-        public Vector2 ToParentSpace(Vector2 input) => ToSpaceOfOtherDrawable(input, Parent);
+        public Vector2 ToParentSpace(Vector2 input) => ToSpaceOfOtherDrawable(input, Parent!);
 
         /// <summary>
         /// Accepts a rectangle in local coordinates and converts it to a quad in Parent's space.
         /// </summary>
         /// <param name="input">A rectangle in local coordinates.</param>
         /// <returns>The quad in Parent's coordinates.</returns>
-        public Quad ToParentSpace(RectangleF input) => ToSpaceOfOtherDrawable(input, Parent);
+        public Quad ToParentSpace(RectangleF input) => ToSpaceOfOtherDrawable(input, Parent!);
 
         /// <summary>
         /// Accepts a vector in local coordinates and converts it to coordinates in screen space.
@@ -2087,9 +2118,6 @@ namespace osu.Framework.Graphics
                     return Handle(e);
             }
         }
-
-        [Obsolete("Use TriggerClick instead.")] // Can be removed 20220203
-        public bool Click() => TriggerClick();
 
         /// <summary>
         /// Triggers a left click event for this <see cref="Drawable"/>.
@@ -2364,134 +2392,6 @@ namespace osu.Framework.Graphics
         public virtual bool HandlePositionalInput => RequestsPositionalInput;
 
         /// <summary>
-        /// Nested class which is used for caching <see cref="Drawable.HandleNonPositionalInput"/>, <see cref="Drawable.HandlePositionalInput"/> values obtained via reflection.
-        /// </summary>
-        private static class HandleInputCache
-        {
-            private static readonly ConcurrentDictionary<Type, bool> positional_cached_values = new ConcurrentDictionary<Type, bool>();
-            private static readonly ConcurrentDictionary<Type, bool> non_positional_cached_values = new ConcurrentDictionary<Type, bool>();
-
-            private static readonly string[] positional_input_methods =
-            {
-                nameof(Handle),
-                nameof(OnMouseMove),
-                nameof(OnHover),
-                nameof(OnHoverLost),
-                nameof(OnMouseDown),
-                nameof(OnMouseUp),
-                nameof(OnClick),
-                nameof(OnDoubleClick),
-                nameof(OnDragStart),
-                nameof(OnDrag),
-                nameof(OnDragEnd),
-                nameof(OnScroll),
-                nameof(OnFocus),
-                nameof(OnFocusLost),
-                nameof(OnTouchDown),
-                nameof(OnTouchMove),
-                nameof(OnTouchUp),
-                nameof(OnTabletPenButtonPress),
-                nameof(OnTabletPenButtonRelease)
-            };
-
-            private static readonly string[] non_positional_input_methods =
-            {
-                nameof(Handle),
-                nameof(OnFocus),
-                nameof(OnFocusLost),
-                nameof(OnKeyDown),
-                nameof(OnKeyUp),
-                nameof(OnJoystickPress),
-                nameof(OnJoystickRelease),
-                nameof(OnJoystickAxisMove),
-                nameof(OnTabletAuxiliaryButtonPress),
-                nameof(OnTabletAuxiliaryButtonRelease),
-                nameof(OnMidiDown),
-                nameof(OnMidiUp)
-            };
-
-            private static readonly Type[] positional_input_interfaces =
-            {
-                typeof(IHasTooltip),
-                typeof(IHasCustomTooltip),
-                typeof(IHasContextMenu),
-                typeof(IHasPopover),
-            };
-
-            private static readonly Type[] non_positional_input_interfaces =
-            {
-                typeof(IKeyBindingHandler),
-            };
-
-            private static readonly string[] positional_input_properties =
-            {
-                nameof(HandlePositionalInput),
-            };
-
-            private static readonly string[] non_positional_input_properties =
-            {
-                nameof(HandleNonPositionalInput),
-                nameof(AcceptsFocus),
-            };
-
-            public static bool RequestsNonPositionalInput(Drawable drawable) => get(drawable, non_positional_cached_values, false);
-
-            public static bool RequestsPositionalInput(Drawable drawable) => get(drawable, positional_cached_values, true);
-
-            private static bool get(Drawable drawable, ConcurrentDictionary<Type, bool> cache, bool positional)
-            {
-                var type = drawable.GetType();
-
-                if (!cache.TryGetValue(type, out bool value))
-                {
-                    value = compute(type, positional);
-                    cache.TryAdd(type, value);
-                }
-
-                return value;
-            }
-
-            private static bool compute([NotNull] Type type, bool positional)
-            {
-                string[] inputMethods = positional ? positional_input_methods : non_positional_input_methods;
-
-                foreach (string inputMethod in inputMethods)
-                {
-                    // check for any input method overrides which are at a higher level than drawable.
-                    var method = type.GetMethod(inputMethod, BindingFlags.Instance | BindingFlags.NonPublic);
-
-                    Debug.Assert(method != null);
-
-                    if (method.DeclaringType != typeof(Drawable))
-                        return true;
-                }
-
-                var inputInterfaces = positional ? positional_input_interfaces : non_positional_input_interfaces;
-
-                foreach (var inputInterface in inputInterfaces)
-                {
-                    // check if this type implements any interface which requires a drawable to handle input.
-                    if (inputInterface.IsAssignableFrom(type))
-                        return true;
-                }
-
-                string[] inputProperties = positional ? positional_input_properties : non_positional_input_properties;
-
-                foreach (string inputProperty in inputProperties)
-                {
-                    var property = type.GetProperty(inputProperty);
-
-                    Debug.Assert(property != null);
-
-                    if (property.DeclaringType != typeof(Drawable))
-                        return true;
-                }
-
-                return false;
-            }
-        }
-
-        /// <summary>
         /// Check whether we have active focus.
         /// </summary>
         public bool HasFocus { get; internal set; }
@@ -2506,6 +2406,11 @@ namespace osu.Framework.Graphics
         /// If true, we will gain focus (receiving priority on keyboard input) (and receive an <see cref="OnFocus"/> event) on returning true in <see cref="OnClick"/>.
         /// </summary>
         public virtual bool AcceptsFocus => false;
+
+        /// <summary>
+        /// If true, returning true in <see cref="OnClick"/> causes the current focus target to be unfocused.
+        /// </summary>
+        public virtual bool ChangeFocusOnClick => true;
 
         /// <summary>
         /// Whether this Drawable is currently hovered over.
@@ -2625,7 +2530,21 @@ namespace osu.Framework.Graphics
 
         #region Transforms
 
-        protected internal ScheduledDelegate Schedule(Action action) => Scheduler.AddDelayed(action, TransformDelay);
+        protected internal ScheduledDelegate Schedule<T>(Action<T> action, T data)
+        {
+            if (TransformDelay > 0)
+                return Scheduler.AddDelayed(action, data, TransformDelay);
+
+            return Scheduler.Add(action, data);
+        }
+
+        protected internal ScheduledDelegate Schedule(Action action)
+        {
+            if (TransformDelay > 0)
+                return Scheduler.AddDelayed(action, TransformDelay);
+
+            return Scheduler.Add(action);
+        }
 
         /// <summary>
         /// Make this drawable automatically clean itself up after all transforms have finished playing.
@@ -2706,7 +2625,7 @@ namespace osu.Framework.Graphics
         /// </summary>
         public static Drawable Empty() => new EmptyDrawable();
 
-        private class EmptyDrawable : Drawable
+        private partial class EmptyDrawable : Drawable
         {
         }
 
@@ -2791,6 +2710,8 @@ namespace osu.Framework.Graphics
     /// x and y counterparts can be accessed using bitwise flags.
     /// </summary>
     [Flags]
+    // todo: revisit when we have a way to exclude enum members from naming rules
+    [SuppressMessage("ReSharper", "InconsistentNaming")]
     public enum Anchor
     {
         TopLeft = y0 | x0,

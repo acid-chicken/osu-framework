@@ -3,18 +3,22 @@
 
 using System;
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
+using System.Text;
+using NUnit.Framework;
 using osuTK.Graphics;
 
 namespace osu.Framework.Testing.Drawables.Steps
 {
-    public class AssertButton : StepButton
+    public partial class AssertButton : StepButton
     {
-        public Func<bool> Assertion;
-        public string ExtendedDescription;
-        public StackTrace CallStack;
+        public required StackTrace CallStack { get; init; }
+        public required Func<bool> Assertion { get; init; }
+        public Func<string>? GetFailureMessage { get; init; }
 
-        public AssertButton(bool isSetupStep = false)
-            : base(isSetupStep)
+        public string? ExtendedDescription { get; init; }
+
+        public AssertButton()
         {
             Action += checkAssert;
             LightColour = Color4.OrangeRed;
@@ -25,22 +29,21 @@ namespace osu.Framework.Testing.Drawables.Steps
             if (Assertion())
                 Success();
             else
-                throw new TracedException($"{Text} {ExtendedDescription}", CallStack);
+            {
+                StringBuilder builder = new StringBuilder();
+
+                builder.Append(Text);
+
+                if (!string.IsNullOrEmpty(ExtendedDescription))
+                    builder.Append($" {ExtendedDescription}");
+
+                if (GetFailureMessage != null)
+                    builder.Append($": {GetFailureMessage()}");
+
+                throw ExceptionDispatchInfo.SetRemoteStackTrace(new AssertionException(builder.ToString()), CallStack.ToString());
+            }
         }
 
         public override string ToString() => "Assert: " + base.ToString();
-
-        private class TracedException : Exception
-        {
-            private readonly StackTrace trace;
-
-            public TracedException(string description, StackTrace trace)
-                : base(description)
-            {
-                this.trace = trace;
-            }
-
-            public override string StackTrace => trace.ToString();
-        }
     }
 }

@@ -1,6 +1,8 @@
 // Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
+#nullable disable
+
 using System.Diagnostics;
 using osu.Framework.Bindables;
 using osu.Framework.Extensions.EnumExtensions;
@@ -13,11 +15,13 @@ using osuTK.Input;
 namespace osu.Framework.Input.Handlers.Mouse
 {
     /// <summary>
-    /// Handles mouse events from an <see cref="SDL2DesktopWindow"/>.
+    /// Handles mouse events from an <see cref="ISDLWindow"/>.
     /// Will use relative mouse mode where possible.
     /// </summary>
     public class MouseHandler : InputHandler, IHasCursorSensitivity, INeedsMousePositionFeedback
     {
+        private static readonly GlobalStatistic<ulong> statistic_total_events = GlobalStatistics.Get<ulong>(StatisticGroupFor<MouseHandler>(), "Total events");
+
         /// <summary>
         /// Whether relative mode should be preferred when the window has focus, the cursor is contained and the OS cursor is not visible.
         /// </summary>
@@ -37,7 +41,7 @@ namespace osu.Framework.Input.Handlers.Mouse
 
         public override bool IsActive => true;
 
-        private SDL2DesktopWindow window;
+        private ISDLWindow window;
 
         private Vector2? lastPosition;
 
@@ -72,7 +76,7 @@ namespace osu.Framework.Input.Handlers.Mouse
             if (!base.Initialize(host))
                 return false;
 
-            if (!(host.Window is SDL2DesktopWindow desktopWindow))
+            if (!(host.Window is ISDLWindow desktopWindow))
                 return false;
 
             window = desktopWindow;
@@ -93,11 +97,11 @@ namespace osu.Framework.Input.Handlers.Mouse
             cursorState = desktopWindow.CursorStateBindable.GetBoundCopy();
             cursorState.BindValueChanged(_ => updateRelativeMode());
 
-            UseRelativeMode.BindValueChanged(_ =>
+            UseRelativeMode.BindValueChanged(e =>
             {
-                if (window != null)
-                    updateRelativeMode();
-            });
+                window.MouseAutoCapture = !e.NewValue;
+                updateRelativeMode();
+            }, true);
 
             Enabled.BindValueChanged(enabled =>
             {
@@ -133,7 +137,7 @@ namespace osu.Framework.Input.Handlers.Mouse
             return true;
         }
 
-        public void FeedbackMousePositionChange(Vector2 position, bool isSelfFeedback)
+        public virtual void FeedbackMousePositionChange(Vector2 position, bool isSelfFeedback)
         {
             if (!Enabled.Value)
                 return;
@@ -217,6 +221,7 @@ namespace osu.Framework.Input.Handlers.Mouse
         {
             PendingInputs.Enqueue(input);
             FrameStatistics.Increment(StatisticsCounterType.MouseEvents);
+            statistic_total_events.Value++;
         }
 
         private void transferLastPositionToHostCursor()

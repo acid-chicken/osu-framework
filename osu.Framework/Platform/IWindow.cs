@@ -3,10 +3,12 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Drawing;
-using JetBrains.Annotations;
+using System.IO;
 using osu.Framework.Bindables;
 using osu.Framework.Configuration;
+using RectangleF = osu.Framework.Graphics.Primitives.RectangleF;
 
 namespace osu.Framework.Platform
 {
@@ -15,6 +17,11 @@ namespace osu.Framework.Platform
     /// </summary>
     public interface IWindow : IDisposable
     {
+        /// <summary>
+        /// The graphics API for this window.
+        /// </summary>
+        internal IGraphicsSurface GraphicsSurface { get; }
+
         /// <summary>
         /// Cycles through the available <see cref="WindowMode"/>s as determined by <see cref="SupportedWindowModes"/>.
         /// </summary>
@@ -32,27 +39,65 @@ namespace osu.Framework.Platform
         void Create();
 
         /// <summary>
-        /// Return value decides whether we should intercept and cancel this exit (if possible).
+        /// Start the window's run loop.
+        /// Is a blocking call on desktop platforms, and a non-blocking call on mobile platforms.
         /// </summary>
-        [CanBeNull]
-        event Func<bool> ExitRequested;
+        void Run();
+
+        /// <summary>
+        /// Invoked once a draw session has finished.
+        /// </summary>
+        void OnDraw();
+
+        /// <summary>
+        /// Forcefully closes the window.
+        /// </summary>
+        void Close();
+
+        /// <summary>
+        /// Invoked once every window event loop.
+        /// </summary>
+        event Action? Update;
+
+        /// <summary>
+        /// Invoked when the window close (X) button or another platform-native exit action has been pressed.
+        /// </summary>
+        event Action? ExitRequested;
 
         /// <summary>
         /// Invoked when the <see cref="IWindow"/> has closed.
         /// </summary>
-        [CanBeNull]
-        event Action Exited;
+        event Action? Exited;
+
+        /// <summary>
+        /// Invoked when the application associated with this <see cref="IWindow"/> has been suspended.
+        /// </summary>
+        event Action? Suspended;
+
+        /// <summary>
+        /// Invoked when the application associated with this <see cref="IWindow"/> has been resumed from suspension.
+        /// </summary>
+        event Action? Resumed;
+
+        /// <summary>
+        /// Invoked when the operating system is low on memory, in order for the application to free some.
+        /// </summary>
+        event Action? LowOnMemory;
 
         /// <summary>
         /// Invoked when the <see cref="IWindow"/> client size has changed.
         /// </summary>
-        [CanBeNull]
-        event Action Resized;
+        event Action? Resized;
 
         /// <summary>
         /// Invoked when the system keyboard layout has changed.
         /// </summary>
-        event Action KeymapChanged;
+        event Action? KeymapChanged;
+
+        /// <summary>
+        /// Invoked when the user drops a file into the window.
+        /// </summary>
+        event Action<string>? DragDrop;
 
         /// <summary>
         /// Whether the OS cursor is currently contained within the game window.
@@ -62,7 +107,17 @@ namespace osu.Framework.Platform
         /// <summary>
         /// Controls the state of the OS cursor.
         /// </summary>
+        /// <remarks>If the cursor is <see cref="Platform.CursorState.Confined"/>, <see cref="CursorConfineRect"/> will be used.</remarks>
         CursorState CursorState { get; set; }
+
+        /// <summary>
+        /// Area to which the mouse cursor is confined to when <see cref="CursorState"/> is <see cref="Platform.CursorState.Confined"/>.
+        /// </summary>
+        /// <remarks>
+        /// Will confine to the whole window by default (or when set to <c>null</c>).
+        /// Supported fully on desktop platforms, and on Android when relative mode is enabled.
+        /// </remarks>
+        RectangleF? CursorConfineRect { get; set; }
 
         /// <summary>
         /// Controls the state of the window.
@@ -70,9 +125,9 @@ namespace osu.Framework.Platform
         WindowState WindowState { get; set; }
 
         /// <summary>
-        /// Controls the vertical sync mode of the screen.
+        /// Invoked when <see cref="WindowState"/> changes.
         /// </summary>
-        bool VerticalSync { get; set; }
+        event Action<WindowState>? WindowStateChanged;
 
         /// <summary>
         /// Returns the default <see cref="WindowMode"/> for the implementation.
@@ -94,7 +149,7 @@ namespace osu.Framework.Platform
         /// <summary>
         /// The <see cref="WindowMode"/>s supported by this <see cref="IWindow"/> implementation.
         /// </summary>
-        IBindableList<WindowMode> SupportedWindowModes { get; }
+        IEnumerable<WindowMode> SupportedWindowModes { get; }
 
         /// <summary>
         /// Provides a <see cref="Bindable{WindowMode}"/> that manages the current window mode.
@@ -103,9 +158,14 @@ namespace osu.Framework.Platform
         Bindable<WindowMode> WindowMode { get; }
 
         /// <summary>
-        /// Exposes the physical displays as an <see cref="IEnumerable{Display}"/>.
+        /// Contains information about the current physical displays.
         /// </summary>
-        IEnumerable<Display> Displays { get; }
+        ImmutableArray<Display> Displays { get; }
+
+        /// <summary>
+        /// Invoked when <see cref="Displays"/> has changed.
+        /// </summary>
+        event Action<IEnumerable<Display>>? DisplaysChanged;
 
         /// <summary>
         /// Gets the <see cref="Display"/> that has been set as "primary" or "default" in the operating system.
@@ -123,52 +183,111 @@ namespace osu.Framework.Platform
         IBindable<DisplayMode> CurrentDisplayMode { get; }
 
         /// <summary>
-        /// Makes this window the current graphics context, if appropriate for the driver.
+        /// Attempts to raise the window, bringing it above other windows and requesting input focus.
         /// </summary>
-        void MakeCurrent();
+        void Raise();
 
         /// <summary>
-        /// Clears the current graphics context, if appropriate for the driver.
+        /// Attempts to hide the window, making it invisible and hidden from the taskbar.
         /// </summary>
-        void ClearCurrent();
+        void Hide();
 
         /// <summary>
-        /// Request close.
+        /// Attempts to show the window, making it visible.
         /// </summary>
-        void Close();
+        void Show();
 
         /// <summary>
-        /// Start the window's run loop.
-        /// Is a blocking call on desktop platforms, and a non-blocking call on mobile platforms.
+        /// Attempts to flash the window in order to request the user's attention.
         /// </summary>
-        void Run();
+        /// <remarks>
+        /// On platforms which don't support any kind of flashing (ie. mobile), this will be a no-op.
+        /// </remarks>
+        /// <param name="flashUntilFocused">
+        /// When <c>true</c>, the window will flash until it is focused again.
+        /// When <c>false</c> it will only flash momentarily.
+        /// </param>
+        void Flash(bool flashUntilFocused = false);
 
         /// <summary>
-        /// Requests that the graphics backend perform a buffer swap.
+        /// Attempts to cancel any window flash requested with <see cref="Flash"/>.
         /// </summary>
-        void SwapBuffers();
+        /// <remarks>
+        /// On platforms which don't support any kind of flashing (ie. mobile), this will be a no-op.
+        /// </remarks>
+        void CancelFlash();
+
+        /// <summary>
+        /// Enable any system level timers that might dim or turn off the screen.
+        /// </summary>
+        void EnableScreenSuspension();
+
+        /// <summary>
+        /// Disable any system level timers that might dim or turn off the screen.
+        /// </summary>
+        void DisableScreenSuspension();
 
         /// <summary>
         /// Whether the window currently has focus.
         /// </summary>
+        [Obsolete("Use IWindow.IsActive.Value instead.")] // can be removed 20250528
         bool Focused { get; }
+
+        /// <summary>
+        /// Sets the window icon to the provided <paramref name="imageStream"/>.
+        /// </summary>
+        void SetIconFromStream(Stream imageStream);
 
         /// <summary>
         /// Convert a screen based coordinate to local window space.
         /// </summary>
         /// <param name="point"></param>
+        [Obsolete("This member should not be used. It was never properly implemented for cross-platform use.")] // can be removed 20250528
         Point PointToClient(Point point);
 
         /// <summary>
         /// Convert a window based coordinate to global screen space.
         /// </summary>
         /// <param name="point"></param>
+        [Obsolete("This member should not be used. It was never properly implemented for cross-platform use.")] // can be removed 20250528
         Point PointToScreen(Point point);
 
         /// <summary>
-        /// The client size of the window (excluding any window decoration/border).
+        /// The client size of the window in pixels (excluding any window decoration/border).
         /// </summary>
         Size ClientSize { get; }
+
+        /// <summary>
+        /// The position of the window.
+        /// </summary>
+        Point Position { get; }
+
+        /// <summary>
+        /// The size of the window in scaled pixels (excluding any window decoration/border).
+        /// </summary>
+        Size Size { get; }
+
+        /// <summary>
+        /// The ratio of <see cref="ClientSize"/> and <see cref="Size"/>.
+        /// </summary>
+        float Scale { get; }
+
+        /// <summary>
+        /// The minimum size of the window.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">Thrown when setting a negative size, or a size greater than <see cref="MaxSize"/>.</exception>
+        Size MinSize { get; set; }
+
+        /// <summary>
+        /// The maximum size of the window.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">Thrown when setting a negative or zero size, or a size less than <see cref="MinSize"/>.</exception>
+        Size MaxSize { get; set; }
+
+        /// <summary>
+        /// Gets or sets whether the window is user-resizable.
+        /// </summary>
+        bool Resizable { get; set; }
 
         /// <summary>
         /// The window title.
